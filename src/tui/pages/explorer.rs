@@ -10,7 +10,9 @@ use tokio::sync::mpsc::Sender;
 use super::Page;
 use crate::app::{AppMsg, SharedLdap};
 use crate::config::{AttrSort, TimeFmt};
-use crate::formats::attributes::{format_bin_value, format_value};
+use crate::formats::attributes::{
+    format_bin_value, format_bitset_rows, format_value, is_bitset_attr,
+};
 use crate::formats::display::entry_display_name;
 use crate::ldap::search::{SearchParams, search_all};
 use crate::tui::widgets::tree::{TreeNode, TreeWidget};
@@ -176,6 +178,21 @@ impl ExplorerPage {
 
         let mut out = Vec::new();
         for (name, vals) in &rows {
+            // Bitset attributes expand per-bit when FormatAttrs is ON, regardless of ExpandAttrs.
+            if self.format_attrs && is_bitset_attr(name) {
+                for v in vals {
+                    let bits = format_bitset_rows(name, v);
+                    if bits.is_empty() {
+                        out.push((name.clone(), v.clone()));
+                    } else {
+                        for bit_name in bits {
+                            out.push((name.clone(), bit_name));
+                        }
+                    }
+                }
+                continue;
+            }
+
             if self.expand_attrs {
                 let shown = vals.len().min(self.attr_limit);
                 for v in &vals[..shown] {
@@ -475,8 +492,17 @@ impl Page for ExplorerPage {
                 let bin_names: Vec<&String> = entry.bin_attrs.keys().collect();
                 for name in bin_names {
                     let vals = &entry.bin_attrs[name];
-                    let formatted: Vec<String> =
-                        vals.iter().map(|b| format_bin_value(name, b)).collect();
+                    let formatted: Vec<String> = vals
+                        .iter()
+                        .map(|b| {
+                            if do_format {
+                                format_bin_value(name, b)
+                            } else {
+                                // OFF: raw hex without type prefix
+                                b.iter().map(|byte| format!("{byte:02x}")).collect()
+                            }
+                        })
+                        .collect();
                     rows.push((name.clone(), formatted));
                 }
 
