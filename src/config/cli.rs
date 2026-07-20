@@ -16,7 +16,8 @@ pub struct Cli {
     pub command: Option<Commands>,
 
     // ── Connection ────────────────────────────────────────────────────────────
-    /// LDAP server port (default: 389 or 636 for LDAPS)
+    /// LDAP server port. Overrides any port in the target URL (ldap://host:PORT).
+    /// Precedence: -P flag > port in URL > config file > default (389, or 636 for LDAPS)
     #[arg(short = 'P', long)]
     pub port: Option<u16>,
 
