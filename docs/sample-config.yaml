@@ -1,0 +1,55 @@
+# rsdap sample configuration
+# Place this file at ./rsdap.yaml or ~/.config/rsdap/config.yaml
+
+# Name of the connection to use by default when no target is specified on the CLI.
+# default_connection: my-lab
+
+global:
+  emojis: true
+  colors: true
+  format: true
+  expand: true
+  limit: 20
+  cache: true
+  attrsort: none       # none | asc | desc
+  timefmt: EU          # EU | US | ISO8601 | <strftime pattern>
+  offset: 0            # hours offset applied to displayed timestamps
+  exportdir: data      # directory where JSON exports are written
+  debug_log: ""        # path for debug log file; empty = disabled
+
+connections:
+  - name: my-lab
+    server: dc01.corp.example.com
+    port: 389            # 0 = auto (389 plain, 636 LDAPS)
+    ldaps: false
+    insecure: false
+    # socks: socks5://proxy.example.com:1080
+    timeout: 10          # seconds
+    backend: msad        # msad | basic | auto
+    username: "CORP\\alice"
+    # password: ""       # prefer passfile or interactive prompt
+    # passfile: ~/.config/rsdap/password
+    domain: CORP
+    # hash: ""           # NTLM NT hash for pass-the-hash
+    # hashfile: ""
+    # kerberos: false
+    # spn: ""
+    # kdc: ""
+    # crt: ""            # client certificate (PEM)
+    # key: ""            # client private key (PEM)
+    # pfx: ""            # PKCS#12 bundle
+    root_dn: ""          # empty = auto-detect from RootDSE
+    filter: "(objectClass=*)"
+    paging: 800
+    schema: false
+    deleted: false
+    # ssh:
+    #   host: jumpbox.example.com
+    #   port: 22
+    #   user: alice
+    #   # password: ""
+    #   # passfile: ""
+    #   agent: false
+    #   # key: ~/.ssh/id_ed25519
+    #   # key_passphrase: ""
+    #   ignore_host_key: false
