@@ -200,6 +200,22 @@ pub struct Cli {
     pub connection: Option<String>,
 }
 
+#[cfg(target_os = "linux")]
+const DEFAULT_HELP: &str = "Write to the default Linux config location ($XDG_CONFIG_HOME/rsdap/config.yaml, \
+     typically ~/.config/rsdap/config.yaml)";
+
+#[cfg(target_os = "macos")]
+const DEFAULT_HELP: &str = "Write to the default macOS config location ($XDG_CONFIG_HOME/rsdap/config.yaml, \
+     typically ~/.config/rsdap/config.yaml)";
+
+#[cfg(target_os = "windows")]
+const DEFAULT_HELP: &str =
+    "Write to the default Windows config location (%APPDATA%\\rsdap\\config.yaml)";
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+const DEFAULT_HELP: &str = "Write to the default Unix config location ($XDG_CONFIG_HOME/rsdap/config.yaml, \
+     typically ~/.config/rsdap/config.yaml)";
+
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     /// Print a sample config to stdout, write to --output, or install to the default platform location
@@ -208,11 +224,10 @@ pub enum Commands {
         #[arg(long)]
         output: Option<String>,
 
-        /// Write to the default platform config location (~/.config/rsdap/config.yaml on Unix)
-        #[arg(long)]
+        #[arg(long, help = DEFAULT_HELP)]
         default: bool,
 
-        /// Overwrite an existing file without prompting (required when --default would overwrite)
+        /// Overwrite an existing file without prompting (required when the destination already exists)
         #[arg(long)]
         yes: bool,
     },
