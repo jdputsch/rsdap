@@ -7,6 +7,52 @@ use crate::config::TimeFmt;
 // Seconds between Windows epoch (1601-01-01) and Unix epoch (1970-01-01).
 const WINDOWS_EPOCH_OFFSET: i64 = 11_644_473_600;
 
+/// 0 = green (≤7 days), 1 = yellow (≤90 days), 2 = red (>90 days).
+pub fn distance_color_level(dt: DateTime<Utc>) -> u8 {
+    let days = Utc::now().signed_duration_since(dt).num_days().abs();
+    if days <= 7 {
+        0
+    } else if days <= 90 {
+        1
+    } else {
+        2
+    }
+}
+
+/// Returns `(date_str, distance_str, color_level)` for a valid FILETIME, or `None` for sentinels.
+pub fn filetime_parts(ft: i64, fmt: &TimeFmt, offset_hours: i32) -> Option<(String, String, u8)> {
+    if ft == 0 || ft == i64::MAX {
+        return None;
+    }
+    let secs = ft / 10_000_000 - WINDOWS_EPOCH_OFFSET;
+    let nanos = ((ft % 10_000_000) * 100) as u32;
+    let dt_utc = DateTime::from_timestamp(secs, nanos)?;
+    let dt = dt_utc + Duration::hours(offset_hours as i64);
+    Some((
+        apply_format(dt, fmt),
+        time_distance(dt_utc),
+        distance_color_level(dt_utc),
+    ))
+}
+
+/// Returns `(date_str, distance_str, color_level)` for a valid Generalized Time, or `None`.
+pub fn generalized_time_parts(
+    value: &str,
+    fmt: &TimeFmt,
+    offset_hours: i32,
+) -> Option<(String, String, u8)> {
+    let trimmed = value.trim_end_matches('Z');
+    let base = trimmed.split('.').next().unwrap_or(trimmed);
+    let naive = NaiveDateTime::parse_from_str(base, "%Y%m%d%H%M%S").ok()?;
+    let dt_utc = Utc.from_utc_datetime(&naive);
+    let dt = dt_utc + Duration::hours(offset_hours as i64);
+    Some((
+        apply_format(dt, fmt),
+        time_distance(dt_utc),
+        distance_color_level(dt_utc),
+    ))
+}
+
 /// Human-readable distance from now, e.g. "3 days ago" or "tomorrow".
 fn time_distance(dt: DateTime<Utc>) -> String {
     let now = Utc::now();

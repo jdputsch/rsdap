@@ -5,6 +5,8 @@ use crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
 use ldap3::Scope;
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
 use tokio::sync::mpsc::Sender;
 
 use super::Page;
@@ -14,8 +16,16 @@ use crate::formats::attributes::{
     format_bin_value, format_bitset_rows, format_value, is_bitset_attr,
 };
 use crate::formats::display::entry_display_name;
+use crate::formats::timestamp::{filetime_parts, generalized_time_parts};
 use crate::ldap::search::{SearchParams, search_all};
 use crate::tui::widgets::tree::{TreeNode, TreeWidget};
+
+/// Raw value stored from LDAP: either a text string or binary bytes.
+#[derive(Clone)]
+enum RawVal {
+    Text(String),
+    Bin(Vec<u8>),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
@@ -37,8 +47,8 @@ pub struct ExplorerPage {
     attrsort: AttrSort,
     timefmt: TimeFmt,
     offset: i32,
-    /// All (name, values) pairs for the selected entry, unsorted.
-    raw_rows: Vec<(String, Vec<String>)>,
+    /// All (name, values) pairs for the selected entry in server order, truly raw.
+    raw_rows: Vec<(String, Vec<RawVal>)>,
     /// DN of the entry currently shown in the attributes panel.
     attr_dn: Option<String>,
     /// Which panel has keyboard focus.
@@ -166,9 +176,69 @@ impl ExplorerPage {
         }
     }
 
-    /// Build the display rows from `raw_rows` applying current sort, expand, and limit settings.
-    fn display_rows(&self) -> Vec<(String, String)> {
-        let mut rows: Vec<(String, Vec<String>)> = self.raw_rows.clone();
+    /// Format one raw value into display string(s).
+    ///
+    /// Normally returns one string; bitset attrs return one string per active bit.
+    fn format_raw_val(&self, name: &str, rv: &RawVal) -> Vec<String> {
+        match rv {
+            RawVal::Bin(bytes) => {
+                if self.format_attrs {
+                    vec![format_bin_value(name, bytes)]
+                } else {
+                    vec![bytes.iter().map(|b| format!("{b:02x}")).collect()]
+                }
+            }
+            RawVal::Text(s) => {
+                if self.format_attrs && is_bitset_attr(name) {
+                    let bits = format_bitset_rows(name, s);
+                    if bits.is_empty() {
+                        vec![s.clone()]
+                    } else {
+                        bits
+                    }
+                } else if self.format_attrs {
+                    vec![format_value(name, s, &self.timefmt, self.offset)]
+                } else {
+                    vec![s.clone()]
+                }
+            }
+        }
+    }
+
+    /// Build a styled Line for one attribute value, coloring the distance suffix for timestamps.
+    fn styled_line(&self, name: &str, rv: &RawVal) -> Line<'static> {
+        let name_span = Span::styled(format!("{name}: "), Style::default().fg(Color::Cyan));
+
+        if self.format_attrs {
+            // Attempt to produce a split (date, distance, color_level) for timestamp attrs.
+            if let RawVal::Text(s) = rv {
+                if let Some((date_str, dist_str, level)) =
+                    try_timestamp_parts(name, s, &self.timefmt, self.offset)
+                {
+                    let dist_color = match level {
+                        0 => Color::Green,
+                        1 => Color::Yellow,
+                        _ => Color::Red,
+                    };
+                    return Line::from(vec![
+                        name_span,
+                        Span::raw(date_str),
+                        Span::raw(" "),
+                        Span::styled(format!("({dist_str})"), Style::default().fg(dist_color)),
+                    ]);
+                }
+            }
+        }
+
+        // Non-timestamp or format OFF: plain formatting.
+        let vals = self.format_raw_val(name, rv);
+        let val_str = vals.join(" | ");
+        Line::from(vec![name_span, Span::raw(val_str)])
+    }
+
+    /// Build the display lines, applying sort, expand, and limit.
+    fn display_lines(&self) -> Vec<Line<'static>> {
+        let mut rows: Vec<(String, Vec<RawVal>)> = self.raw_rows.clone();
 
         match self.attrsort {
             AttrSort::None => {}
@@ -180,14 +250,25 @@ impl ExplorerPage {
         for (name, vals) in &rows {
             // Bitset attributes expand per-bit when FormatAttrs is ON, regardless of ExpandAttrs.
             if self.format_attrs && is_bitset_attr(name) {
-                for v in vals {
-                    let bits = format_bitset_rows(name, v);
-                    if bits.is_empty() {
-                        out.push((name.clone(), v.clone()));
-                    } else {
-                        for bit_name in bits {
-                            out.push((name.clone(), bit_name));
+                for rv in vals {
+                    if let RawVal::Text(s) = rv {
+                        let bits = format_bitset_rows(name, s);
+                        if bits.is_empty() {
+                            out.push(self.styled_line(name, rv));
+                        } else {
+                            for bit_name in bits {
+                                let line = Line::from(vec![
+                                    Span::styled(
+                                        format!("{name}: "),
+                                        Style::default().fg(Color::Cyan),
+                                    ),
+                                    Span::raw(bit_name),
+                                ]);
+                                out.push(line);
+                            }
                         }
+                    } else {
+                        out.push(self.styled_line(name, rv));
                     }
                 }
                 continue;
@@ -195,21 +276,65 @@ impl ExplorerPage {
 
             if self.expand_attrs {
                 let shown = vals.len().min(self.attr_limit);
-                for v in &vals[..shown] {
-                    out.push((name.clone(), v.clone()));
+                for rv in &vals[..shown] {
+                    out.push(self.styled_line(name, rv));
                 }
                 if vals.len() > self.attr_limit {
-                    out.push((
-                        name.clone(),
-                        format!("… {} more values hidden", vals.len() - self.attr_limit),
-                    ));
+                    let hidden = vals.len() - self.attr_limit;
+                    out.push(Line::from(vec![
+                        Span::styled(format!("{name}: "), Style::default().fg(Color::Cyan)),
+                        Span::styled(
+                            format!("… {hidden} more values hidden"),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ]));
                 }
             } else {
                 // Collapsed: join all values with " | "
-                out.push((name.clone(), vals.join(" | ")));
+                let joined: Vec<String> = vals
+                    .iter()
+                    .flat_map(|rv| self.format_raw_val(name, rv))
+                    .collect();
+                out.push(Line::from(vec![
+                    Span::styled(format!("{name}: "), Style::default().fg(Color::Cyan)),
+                    Span::raw(joined.join(" | ")),
+                ]));
             }
         }
         out
+    }
+
+    /// Number of display rows (for scroll limit calculation, avoids cloning Lines).
+    fn display_len(&self) -> usize {
+        self.display_lines().len()
+    }
+}
+
+/// Try to extract (date_str, distance_str, color_level) for a known timestamp attribute.
+fn try_timestamp_parts(
+    attr_name: &str,
+    raw: &str,
+    fmt: &TimeFmt,
+    offset: i32,
+) -> Option<(String, String, u8)> {
+    match attr_name.to_lowercase().as_str() {
+        "lastlogon"
+        | "lastlogontimestamp"
+        | "lastlogoff"
+        | "badpasswordtime"
+        | "pwdlastset"
+        | "accountexpires"
+        | "lockouttime"
+        | "creationtime"
+        | "msds-lastsuccessfulinteractivelogontime"
+        | "msds-lastfailedinteractivelogontime" => {
+            let ft = raw.parse::<i64>().ok()?;
+            filetime_parts(ft, fmt, offset)
+        }
+        "whencreated" | "whenchanged" | "dscorepropagationdata" => {
+            generalized_time_parts(raw, fmt, offset)
+        }
+        _ => None,
     }
 }
 
@@ -224,8 +349,7 @@ impl Page for ExplorerPage {
 
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect) {
         use ratatui::layout::{Constraint, Direction, Layout};
-        use ratatui::style::{Color, Modifier, Style};
-        use ratatui::text::{Line, Span};
+        use ratatui::style::Modifier;
         use ratatui::widgets::{Block, Borders, List, ListItem};
 
         let chunks = Layout::default()
@@ -256,24 +380,19 @@ impl Page for ExplorerPage {
             None => "Attributes".to_owned(),
         };
 
-        let display = self.display_rows();
+        let lines = self.display_lines();
         let visible_height = chunks[1].height.saturating_sub(2) as usize;
         // Clamp scroll to valid range.
-        let max_scroll = display.len().saturating_sub(visible_height);
+        let max_scroll = lines.len().saturating_sub(visible_height);
         if self.attr_scroll > max_scroll {
             self.attr_scroll = max_scroll;
         }
 
-        let items: Vec<ListItem> = display
-            .iter()
+        let items: Vec<ListItem> = lines
+            .into_iter()
             .skip(self.attr_scroll)
             .take(visible_height)
-            .map(|(name, val)| {
-                ListItem::new(Line::from(vec![
-                    Span::styled(format!("{name}: "), Style::default().fg(Color::Cyan)),
-                    Span::raw(val.clone()),
-                ]))
-            })
+            .map(ListItem::new)
             .collect();
 
         let attr_block = Block::default()
@@ -281,8 +400,7 @@ impl Page for ExplorerPage {
             .title(title)
             .border_style(attr_border_style);
 
-        // Show a scroll indicator in the title if content exceeds the viewport.
-        let list = if display.len() > visible_height {
+        let list = if self.display_len() > visible_height {
             List::new(items)
                 .block(attr_block)
                 .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
@@ -349,7 +467,7 @@ impl Page for ExplorerPage {
             },
             Focus::Attrs => match (code, modifiers) {
                 (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
-                    let display_len = self.display_rows().len();
+                    let display_len = self.display_len();
                     if self.attr_scroll + 1 < display_len {
                         self.attr_scroll += 1;
                     }
@@ -371,7 +489,7 @@ impl Page for ExplorerPage {
         match event.kind {
             MouseEventKind::ScrollDown => {
                 if in_rect(self.attr_rect) {
-                    let display_len = self.display_rows().len();
+                    let display_len = self.display_len();
                     if self.attr_scroll + 1 < display_len {
                         self.attr_scroll += 1;
                     }
@@ -467,43 +585,20 @@ impl Page for ExplorerPage {
                     return;
                 }
 
-                let fmt = &self.timefmt.clone();
-                let offset = self.offset;
-                let do_format = self.format_attrs;
+                // Store truly raw data — format at render time so toggles take effect immediately.
+                let mut rows: Vec<(String, Vec<RawVal>)> = Vec::new();
 
-                let mut rows: Vec<(String, Vec<String>)> = Vec::new();
-
-                let attr_names: Vec<&String> = entry.attrs.keys().collect();
-                for name in attr_names {
-                    let vals = &entry.attrs[name];
-                    let formatted: Vec<String> = vals
-                        .iter()
-                        .map(|v| {
-                            if do_format {
-                                format_value(name, v, fmt, offset)
-                            } else {
-                                v.clone()
-                            }
-                        })
-                        .collect();
-                    rows.push((name.clone(), formatted));
+                for (name, vals) in &entry.attrs {
+                    rows.push((
+                        name.clone(),
+                        vals.iter().map(|v| RawVal::Text(v.clone())).collect(),
+                    ));
                 }
-
-                let bin_names: Vec<&String> = entry.bin_attrs.keys().collect();
-                for name in bin_names {
-                    let vals = &entry.bin_attrs[name];
-                    let formatted: Vec<String> = vals
-                        .iter()
-                        .map(|b| {
-                            if do_format {
-                                format_bin_value(name, b)
-                            } else {
-                                // OFF: raw hex without type prefix
-                                b.iter().map(|byte| format!("{byte:02x}")).collect()
-                            }
-                        })
-                        .collect();
-                    rows.push((name.clone(), formatted));
+                for (name, vals) in &entry.bin_attrs {
+                    rows.push((
+                        name.clone(),
+                        vals.iter().map(|b| RawVal::Bin(b.clone())).collect(),
+                    ));
                 }
 
                 self.raw_rows = rows;
@@ -512,7 +607,7 @@ impl Page for ExplorerPage {
 
             AppMsg::ConfigChanged(cfg) => {
                 self.apply_config(&cfg);
-                // raw_rows stay valid; display_rows() re-applies the updated settings on next render.
+                // raw_rows stay valid; display_lines() re-applies settings on next render.
             }
 
             _ => {}
