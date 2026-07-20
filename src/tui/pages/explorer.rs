@@ -11,7 +11,7 @@ use super::Page;
 use crate::app::{AppMsg, SharedLdap};
 use crate::config::{AttrSort, TimeFmt};
 use crate::formats::attributes::{format_bin_value, format_value};
-use crate::formats::display::{emoji_for_entry, entry_display_name};
+use crate::formats::display::entry_display_name;
 use crate::ldap::search::{SearchParams, search_all};
 use crate::tui::widgets::tree::{TreeNode, TreeWidget};
 
@@ -232,7 +232,7 @@ impl Page for ExplorerPage {
         };
 
         self.tree
-            .render_with_style(frame, chunks[0], "Tree", tree_border_style);
+            .render_with_style(frame, chunks[0], "Tree", tree_border_style, self.emojis);
 
         let title = match &self.attr_dn {
             Some(dn) => format!("Attributes — {dn}"),
@@ -387,6 +387,7 @@ impl Page for ExplorerPage {
                 self.tree.nodes.push(TreeNode {
                     id: root_dn.clone(),
                     label: root_dn.clone(),
+                    object_classes: vec!["domain".to_owned()],
                     depth: 0,
                     expanded: true,
                     has_children: true,
@@ -400,19 +401,13 @@ impl Page for ExplorerPage {
             }
 
             AppMsg::ChildEntries { parent_dn, entries } => {
-                let emojis = self.emojis;
                 let children: Vec<TreeNode> = entries
                     .iter()
                     .map(|e| {
                         let dn = e.dn.clone();
                         let object_classes: Vec<String> =
                             e.attrs.get("objectClass").cloned().unwrap_or_default();
-                        let display = entry_display_name(&dn, &e.attrs);
-                        let label = if emojis {
-                            format!("{} {display}", emoji_for_entry(&object_classes))
-                        } else {
-                            display
-                        };
+                        let label = entry_display_name(&dn, &e.attrs);
                         let has_children = object_classes.iter().any(|c| {
                             matches!(
                                 c.to_lowercase().as_str(),
@@ -438,6 +433,7 @@ impl Page for ExplorerPage {
                         TreeNode {
                             id: dn,
                             label,
+                            object_classes,
                             depth: parent_depth + 1,
                             expanded: false,
                             has_children,

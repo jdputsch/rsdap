@@ -12,7 +12,10 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 #[derive(Debug, Clone)]
 pub struct TreeNode {
     pub id: String,
+    /// Display name without any emoji prefix.
     pub label: String,
+    /// objectClass values used to derive the emoji at render time.
+    pub object_classes: Vec<String>,
     pub depth: usize,
     pub expanded: bool,
     pub has_children: bool,
@@ -56,7 +59,7 @@ impl TreeWidget {
     }
 
     pub fn render(&mut self, frame: &mut Frame<'_>, area: Rect, title: &str) {
-        self.render_with_style(frame, area, title, Style::default());
+        self.render_with_style(frame, area, title, Style::default(), false);
     }
 
     pub fn render_with_style(
@@ -65,7 +68,10 @@ impl TreeWidget {
         area: Rect,
         title: &str,
         border_style: Style,
+        emojis: bool,
     ) {
+        use crate::formats::display::emoji_for_entry;
+
         let visible = self.visible_indices();
 
         let items: Vec<ListItem> = visible
@@ -78,10 +84,15 @@ impl TreeWidget {
                 } else {
                     "  "
                 };
+                let display = if emojis {
+                    format!("{} {}", emoji_for_entry(&node.object_classes), node.label)
+                } else {
+                    node.label.clone()
+                };
                 let line = Line::from(vec![
                     Span::raw(indent),
                     Span::raw(marker),
-                    Span::raw(node.label.clone()),
+                    Span::raw(display),
                 ]);
                 ListItem::new(line)
             })
@@ -210,6 +221,7 @@ mod tests {
         TreeNode {
             id: id.to_string(),
             label: id.to_string(),
+            object_classes: Vec::new(),
             depth,
             expanded,
             has_children,
