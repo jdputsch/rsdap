@@ -164,8 +164,14 @@ When `--username` is set but no password/hash/kerberos/cert method is provided, 
 
 1. `--config` flag (explicit)
 2. `./rsdap.yaml` (current directory)
-3. `~/.config/rsdap/config.yaml` (Linux/macOS)
-4. `%APPDATA%\rsdap\config.yaml` (Windows)
+3. Platform config directory via `etcetera` (XDG strategy on Unix, native on Windows):
+   - Linux: `$XDG_CONFIG_HOME/rsdap/config.yaml` (default `~/.config/rsdap/config.yaml`)
+   - macOS: `$XDG_CONFIG_HOME/rsdap/config.yaml` (default `~/.config/rsdap/config.yaml`)
+   - Windows: `%APPDATA%\rsdap\config.yaml`
+
+`etcetera` is used (with the XDG strategy unconditionally on Unix) rather than the Apple
+strategy, because `rsdap` is a CLI/TUI tool whose users manage dotfiles via `~/.config`
+and expect `$XDG_CONFIG_HOME` to be respected, even on macOS.
 
 ### 3.2 Structure (YAML)
 
@@ -781,6 +787,7 @@ On "Update": applies new settings and triggers reconnection.
 | SSH client / local port forwarding | `russh` or `ssh2` |
 | SOCKS5 proxy dialing | `tokio-socks` or `fast-socks5` |
 | YAML config parsing | `serde` + `serde_yaml` |
+| Platform config/data directories | `etcetera` (XDG strategy on Unix, native on Windows) |
 | CLI argument parsing | `clap` |
 | Terminal raw mode / masked password input | `crossterm` |
 | PKCS#12 / PFX certificate decoding | `p12` or `native-tls` |

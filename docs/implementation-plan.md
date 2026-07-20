@@ -33,6 +33,9 @@ Phases are ordered so each one produces a **runnable, manually testable result**
   - Parse `BackendFlavor`, `TimeFmt`, `AttrSort` from string flags
   - Build `SshConfig` from `--ssh-*` flags when `--ssh-host` is set
   - Handle `init-config` and `version` subcommands (print and exit before TUI opens)
+- `src/config/file.rs` — config file discovery uses `etcetera` (XDG strategy on Unix)
+  - Linux/macOS: `$XDG_CONFIG_HOME/rsdap/config.yaml` (falls back to `~/.config/rsdap/config.yaml`)
+  - Windows: `%APPDATA%\rsdap\config.yaml`
 
 **Tests:**
 - Unit: `resolve` with various flag combinations → correct `AuthMethod` variant

@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use etcetera::BaseStrategy;
 use serde::{Deserialize, Serialize};
 
 use super::types::{AttrSort, SshConfig, TimeFmt};
@@ -85,32 +86,26 @@ fn discover_config_path() -> Option<PathBuf> {
         return Some(local);
     }
 
-    // 2. ~/.config/rsdap/config.yaml (Linux/macOS) or %APPDATA%\rsdap\config.yaml (Windows)
-    #[cfg(not(windows))]
-    {
-        if let Some(home) = dirs_home() {
-            let p = home.join(".config/rsdap/config.yaml");
-            if p.exists() {
-                return Some(p);
-            }
-        }
-    }
-    #[cfg(windows)]
-    {
-        if let Some(appdata) = std::env::var_os("APPDATA") {
-            let p = PathBuf::from(appdata).join("rsdap\\config.yaml");
-            if p.exists() {
-                return Some(p);
-            }
-        }
+    // 2. Platform config dir via etcetera.
+    //    XDG strategy on Unix (respects $XDG_CONFIG_HOME; falls back to ~/.config).
+    //    Native Windows strategy (%APPDATA%).
+    let strategy = platform_strategy().ok()?;
+    let p = strategy.config_dir().join("rsdap").join("config.yaml");
+    if p.exists() {
+        return Some(p);
     }
 
     None
 }
 
-#[cfg(not(windows))]
-fn dirs_home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+#[cfg(unix)]
+fn platform_strategy() -> Result<impl BaseStrategy> {
+    etcetera::base_strategy::Xdg::new().map_err(anyhow::Error::from)
+}
+
+#[cfg(windows)]
+fn platform_strategy() -> Result<impl BaseStrategy> {
+    etcetera::base_strategy::Windows::new().map_err(anyhow::Error::from)
 }
 
 /// Generate a fully-documented sample config YAML string.
