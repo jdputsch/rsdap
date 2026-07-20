@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 
 use crate::config::ResolvedConfig;
 use crate::ldap::LdapClient;
+use crate::tui::log_panel::LogPanel;
 use crate::tui::pages::{Page, PageKind};
 
 /// Messages sent from async tasks back to the UI thread.
@@ -17,7 +18,7 @@ use crate::tui::pages::{Page, PageKind};
 pub enum AppMsg {
     LdapResult(LdapResult),
     Error(String),
-    Connected,
+    Connected { root_dn: String, tls: bool },
     Disconnected,
 }
 
@@ -35,6 +36,8 @@ pub struct App {
     pub pages: Vec<Box<dyn Page>>,
     pub show_header: bool,
     pub ldap: Option<LdapClient>,
+    pub connected: bool,
+    pub log: LogPanel,
     pub msg_tx: mpsc::Sender<AppMsg>,
     msg_rx: mpsc::Receiver<AppMsg>,
 }
@@ -49,6 +52,8 @@ impl App {
             pages,
             show_header: true,
             ldap: None,
+            connected: false,
+            log: LogPanel::new(),
             msg_tx,
             msg_rx,
         }
@@ -58,9 +63,9 @@ impl App {
         use crate::tui::layout::build_layout;
         let areas = build_layout(frame.area(), self.show_header);
         crate::tui::header::render(frame, areas.tab_bar, &self.pages, self.active_page);
-        crate::tui::log_panel::render(frame, areas.log_panel);
+        self.log.render(frame, areas.log_panel);
         if self.show_header {
-            crate::tui::status_bar::render(frame, areas.status_bar, &self.config);
+            crate::tui::status_bar::render(frame, areas.status_bar, &self.config, self.connected);
         }
         self.pages[self.active_page].render(frame, areas.content);
     }
@@ -87,7 +92,23 @@ impl App {
     }
 
     pub fn apply(&mut self, msg: AppMsg) {
-        self.pages[self.active_page].apply_msg(msg);
+        match msg {
+            AppMsg::Connected { root_dn, tls } => {
+                self.connected = true;
+                let tls_tag = if tls { " [TLS]" } else { "" };
+                self.log.push(format!("Connected to {root_dn}{tls_tag}"));
+            }
+            AppMsg::Disconnected => {
+                self.connected = false;
+                self.log.push("Disconnected.");
+            }
+            AppMsg::Error(e) => {
+                self.log.push(format!("Error: {e}"));
+            }
+            AppMsg::LdapResult(_) => {
+                self.pages[self.active_page].apply_msg(msg);
+            }
+        }
     }
 
     fn next_page(&mut self) {
@@ -118,7 +139,25 @@ pub async fn run(config: ResolvedConfig) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(config);
+    let mut app = App::new(config.clone());
+    app.log
+        .push(format!("Connecting to {}:{}…", config.server, config.port));
+
+    // Spawn connection task.
+    let tx = app.msg_tx.clone();
+    tokio::spawn(async move {
+        match LdapClient::connect(&config).await {
+            Ok(client) => {
+                let root_dn = client.root_dn.clone();
+                let tls = client.tls;
+                // Store client — for now just report connected; Phase 3 wires it into App.
+                let _ = tx.send(AppMsg::Connected { root_dn, tls }).await;
+            }
+            Err(e) => {
+                let _ = tx.send(AppMsg::Error(e.to_string())).await;
+            }
+        }
+    });
 
     loop {
         terminal.draw(|f| app.render(f))?;

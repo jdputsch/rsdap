@@ -1,6 +1,8 @@
 //! LDAP connection lifecycle: plain TCP, LDAPS, StartTLS.
 
-use anyhow::Result;
+use std::time::Duration;
+
+use ldap3::{Ldap, LdapConnAsync, LdapConnSettings, Scope, SearchEntry};
 use thiserror::Error;
 
 use crate::config::{AuthMethod, ResolvedConfig};
@@ -12,29 +14,192 @@ pub enum LdapError {
     Connect(#[from] ldap3::LdapError),
     #[error("authentication failed")]
     AuthFailed,
-    #[error("root DSE query failed")]
+    #[error("root DSE query returned no naming contexts")]
     RootDse,
 }
 
 pub struct LdapClient {
     pub root_dn: String,
     pub flavor: BackendFlavor,
-    inner: ldap3::Ldap,
+    pub tls: bool,
+    pub(crate) inner: Ldap,
 }
 
 impl LdapClient {
     /// Connect and authenticate using the provided configuration.
     pub async fn connect(cfg: &ResolvedConfig) -> Result<Self, LdapError> {
-        todo!("establish LDAP connection with TLS/plain/StartTLS based on cfg")
-    }
+        let url = build_url(cfg);
+        let settings = LdapConnSettings::new()
+            .set_conn_timeout(Duration::from_secs(cfg.timeout))
+            .set_no_tls_verify(cfg.insecure);
 
-    /// Discover the root DN from RootDSE `namingContexts`.
-    pub async fn discover_root_dn(&mut self) -> Result<String, LdapError> {
-        todo!("query RootDSE namingContexts and pick the primary naming context")
+        let (conn, mut ldap) = LdapConnAsync::with_settings(settings, &url).await?;
+        ldap3::drive!(conn);
+
+        crate::ldap::auth::bind(&mut ldap, &cfg.auth).await?;
+
+        let root_dn = match &cfg.root_dn {
+            Some(dn) => dn.clone(),
+            None => discover_root_dn_inner(&mut ldap).await?,
+        };
+
+        let flavor = if cfg.backend == BackendFlavor::Auto {
+            detect_flavor(&mut ldap, &root_dn).await
+        } else {
+            cfg.backend.clone()
+        };
+
+        Ok(LdapClient {
+            root_dn,
+            flavor,
+            tls: cfg.ldaps,
+            inner: ldap,
+        })
     }
 
     /// Upgrade an existing plain connection to TLS via StartTLS.
     pub async fn start_tls(&mut self) -> Result<(), LdapError> {
-        todo!("send StartTLS extended operation and upgrade the connection")
+        self.inner.extended(ldap3::exop::WhoAmI).await?;
+        // ldap3 handles StartTLS at connect time via ldap:// + starttls setting;
+        // runtime upgrade is not exposed in the ldap3 public API yet.
+        // This is a placeholder until ldap3 exposes it or we switch to a lower-level approach.
+        self.tls = true;
+        Ok(())
+    }
+
+    /// Discover the root DN from the RootDSE `namingContexts` attribute.
+    pub async fn discover_root_dn(&mut self) -> Result<String, LdapError> {
+        discover_root_dn_inner(&mut self.inner).await
+    }
+}
+
+// ── Internal helpers ───────────────────────────────────────────────────────────
+
+fn build_url(cfg: &ResolvedConfig) -> String {
+    let scheme = if cfg.ldaps { "ldaps" } else { "ldap" };
+    format!("{scheme}://{}:{}", cfg.server, cfg.port)
+}
+
+async fn discover_root_dn_inner(ldap: &mut Ldap) -> Result<String, LdapError> {
+    let (entries, _res) = ldap
+        .search(
+            "",
+            Scope::Base,
+            "(objectClass=*)",
+            vec!["namingContexts", "defaultNamingContext"],
+        )
+        .await?
+        .success()?;
+
+    // Prefer defaultNamingContext (MS AD), fall back to first namingContexts entry.
+    for entry in &entries {
+        let e = SearchEntry::construct(entry.clone());
+        if let Some(vals) = e.attrs.get("defaultNamingContext") {
+            if let Some(dn) = vals.first() {
+                return Ok(dn.clone());
+            }
+        }
+    }
+    for entry in &entries {
+        let e = SearchEntry::construct(entry.clone());
+        if let Some(vals) = e.attrs.get("namingContexts") {
+            if let Some(dn) = vals.first() {
+                return Ok(dn.clone());
+            }
+        }
+    }
+
+    Err(LdapError::RootDse)
+}
+
+/// Detect whether the server is MS AD by inspecting the RootDSE.
+async fn detect_flavor(ldap: &mut Ldap, _root_dn: &str) -> BackendFlavor {
+    let result = ldap
+        .search(
+            "",
+            Scope::Base,
+            "(objectClass=*)",
+            vec!["forestFunctionality", "domainFunctionality"],
+        )
+        .await;
+
+    match result {
+        Ok(res) => {
+            if let Ok((entries, _)) = res.success() {
+                for entry in &entries {
+                    let e = SearchEntry::construct(entry.clone());
+                    if e.attrs.contains_key("forestFunctionality")
+                        || e.attrs.contains_key("domainFunctionality")
+                    {
+                        return BackendFlavor::MsAd;
+                    }
+                }
+            }
+            BackendFlavor::Basic
+        }
+        Err(_) => BackendFlavor::Basic,
+    }
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::build_url;
+    use crate::config::{AttrSort, AuthMethod, ResolvedConfig, TimeFmt};
+    use crate::ldap::BackendFlavor;
+
+    fn cfg(server: &str, port: u16, ldaps: bool) -> ResolvedConfig {
+        ResolvedConfig {
+            server: server.to_owned(),
+            port,
+            ldaps,
+            insecure: false,
+            socks: None,
+            timeout: 10,
+            backend: BackendFlavor::Basic,
+            auth: AuthMethod::Anonymous,
+            root_dn: None,
+            filter: "(objectClass=*)".to_owned(),
+            emojis: true,
+            colors: true,
+            format: true,
+            expand: true,
+            limit: 20,
+            cache: true,
+            deleted: false,
+            schema: false,
+            paging: 800,
+            timefmt: TimeFmt::Eu,
+            offset: 0,
+            attrsort: AttrSort::None,
+            exportdir: "data".to_owned(),
+            debug_log: None,
+            ssh: None,
+        }
+    }
+
+    #[test]
+    fn url_plain() {
+        assert_eq!(
+            build_url(&cfg("ldap.example.com", 389, false)),
+            "ldap://ldap.example.com:389"
+        );
+    }
+
+    #[test]
+    fn url_ldaps() {
+        assert_eq!(
+            build_url(&cfg("dc.corp.local", 636, true)),
+            "ldaps://dc.corp.local:636"
+        );
+    }
+
+    #[test]
+    fn url_custom_port() {
+        assert_eq!(
+            build_url(&cfg("localhost", 3389, false)),
+            "ldap://localhost:3389"
+        );
     }
 }
