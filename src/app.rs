@@ -113,7 +113,11 @@ impl App {
     }
 
     pub fn handle_event(&mut self, event: Event) -> Result<bool> {
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
+        if let Event::Mouse(mouse) = event {
+            self.pages[self.active_page].handle_mouse(mouse);
+            return Ok(false);
+        }
         if let Event::Key(KeyEvent {
             code, modifiers, ..
         }) = event
@@ -221,7 +225,11 @@ fn build_pages(config: &ResolvedConfig, tx: mpsc::Sender<AppMsg>) -> Vec<Box<dyn
 pub async fn run(config: ResolvedConfig) -> Result<()> {
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
+    crossterm::execute!(
+        stdout,
+        crossterm::terminal::EnterAlternateScreen,
+        crossterm::event::EnableMouseCapture
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -268,6 +276,7 @@ pub async fn run(config: ResolvedConfig) -> Result<()> {
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(
         terminal.backend_mut(),
+        crossterm::event::DisableMouseCapture,
         crossterm::terminal::LeaveAlternateScreen
     )?;
     Ok(())

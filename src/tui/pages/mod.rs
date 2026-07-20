@@ -1,7 +1,7 @@
 //! Page trait and page module re-exports.
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyModifiers, MouseEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
@@ -48,6 +48,9 @@ pub trait Page {
 
     /// Handle a key event forwarded from the app event loop.
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()>;
+
+    /// Handle a mouse event forwarded from the app event loop. Default: no-op.
+    fn handle_mouse(&mut self, _event: MouseEvent) {}
 
     /// Apply an async result message from the LDAP task pool.
     fn apply_msg(&mut self, msg: AppMsg);

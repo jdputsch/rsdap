@@ -1,7 +1,7 @@
 //! Explorer page: lazy-loading LDAP tree (left) + attributes table (right).
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
 use ldap3::Scope;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -43,6 +43,9 @@ pub struct ExplorerPage {
     focus: Focus,
     /// Scroll offset for the attributes list.
     attr_scroll: usize,
+    /// Bounding rects of the two panels, updated on each render for mouse hit-testing.
+    tree_rect: Rect,
+    attr_rect: Rect,
 }
 
 impl ExplorerPage {
@@ -64,6 +67,8 @@ impl ExplorerPage {
             attr_dn: None,
             focus: Focus::Tree,
             attr_scroll: 0,
+            tree_rect: Rect::default(),
+            attr_rect: Rect::default(),
         }
     }
 
@@ -211,6 +216,9 @@ impl Page for ExplorerPage {
             .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
             .split(area);
 
+        self.tree_rect = chunks[0];
+        self.attr_rect = chunks[1];
+
         // Highlight the focused panel's border.
         let tree_border_style = if self.focus == Focus::Tree {
             Style::default().fg(Color::Yellow)
@@ -336,6 +344,35 @@ impl Page for ExplorerPage {
             },
         }
         Ok(())
+    }
+
+    fn handle_mouse(&mut self, event: MouseEvent) {
+        let (col, row) = (event.column, event.row);
+        let in_rect =
+            |r: Rect| col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height;
+
+        match event.kind {
+            MouseEventKind::ScrollDown => {
+                if in_rect(self.attr_rect) {
+                    let display_len = self.display_rows().len();
+                    if self.attr_scroll + 1 < display_len {
+                        self.attr_scroll += 1;
+                    }
+                } else if in_rect(self.tree_rect) {
+                    self.tree.select_next();
+                    self.on_selection_change();
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                if in_rect(self.attr_rect) {
+                    self.attr_scroll = self.attr_scroll.saturating_sub(1);
+                } else if in_rect(self.tree_rect) {
+                    self.tree.select_prev();
+                    self.on_selection_change();
+                }
+            }
+            _ => {}
+        }
     }
 
     fn apply_msg(&mut self, msg: AppMsg) {
