@@ -23,11 +23,11 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, config: &ResolvedConfig, connec
     let mut spans = Vec::new();
     spans.extend(indicator("Connected", connected));
     spans.extend(indicator("TLS", config.ldaps));
-    spans.extend(indicator("Format", config.format));
-    spans.extend(indicator("Colors", config.colors));
-    spans.extend(indicator("Expand", config.expand));
-    spans.extend(indicator("Emoji", config.emojis));
-    spans.extend(indicator("Deleted", config.deleted));
+    spans.extend(indicator("Format (f)", config.format));
+    spans.extend(indicator("Colors (c)", config.colors));
+    spans.extend(indicator("Expand (a)", config.expand));
+    spans.extend(indicator("Emoji (e)", config.emojis));
+    spans.extend(indicator("Deleted (d)", config.deleted));
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }

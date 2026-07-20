@@ -56,6 +56,16 @@ impl TreeWidget {
     }
 
     pub fn render(&mut self, frame: &mut Frame<'_>, area: Rect, title: &str) {
+        self.render_with_style(frame, area, title, Style::default());
+    }
+
+    pub fn render_with_style(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        title: &str,
+        border_style: Style,
+    ) {
         let visible = self.visible_indices();
 
         let items: Vec<ListItem> = visible
@@ -78,7 +88,12 @@ impl TreeWidget {
             .collect();
 
         let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(title))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(border_style),
+            )
             .highlight_style(
                 Style::default()
                     .fg(Color::Black)
@@ -184,5 +199,101 @@ impl TreeWidget {
 impl Default for TreeWidget {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(id: &str, depth: usize, expanded: bool, has_children: bool) -> TreeNode {
+        TreeNode {
+            id: id.to_string(),
+            label: id.to_string(),
+            depth,
+            expanded,
+            has_children,
+            children_loaded: false,
+        }
+    }
+
+    #[test]
+    fn flat_tree_all_visible() {
+        let mut w = TreeWidget::new();
+        w.nodes = vec![node("a", 0, false, false), node("b", 0, false, false)];
+        let vis = w.visible_indices();
+        assert_eq!(vis, vec![0, 1]);
+    }
+
+    #[test]
+    fn collapsed_parent_hides_children() {
+        let mut w = TreeWidget::new();
+        w.nodes = vec![
+            node("root", 0, false, true), // collapsed
+            node("child1", 1, false, false),
+            node("child2", 1, false, false),
+        ];
+        let vis = w.visible_indices();
+        assert_eq!(
+            vis,
+            vec![0],
+            "children of a collapsed parent should be hidden"
+        );
+    }
+
+    #[test]
+    fn expanded_parent_shows_children() {
+        let mut w = TreeWidget::new();
+        w.nodes = vec![
+            node("root", 0, true, true), // expanded
+            node("child1", 1, false, false),
+            node("child2", 1, false, false),
+        ];
+        let vis = w.visible_indices();
+        assert_eq!(vis, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn nested_collapse_hides_grandchildren() {
+        let mut w = TreeWidget::new();
+        w.nodes = vec![
+            node("root", 0, true, true),    // expanded
+            node("child", 1, false, true),  // collapsed
+            node("grand", 2, false, false), // hidden because parent collapsed
+        ];
+        let vis = w.visible_indices();
+        assert_eq!(vis, vec![0, 1]);
+    }
+
+    #[test]
+    fn set_children_inserts_and_replaces() {
+        let mut w = TreeWidget::new();
+        w.nodes = vec![node("root", 0, true, true)];
+        w.set_children(
+            "root",
+            vec![node("a", 1, false, false), node("b", 1, false, false)],
+        );
+        assert_eq!(w.nodes.len(), 3);
+        assert_eq!(w.nodes[1].id, "a");
+        assert_eq!(w.nodes[2].id, "b");
+
+        // Replace with one child.
+        w.set_children("root", vec![node("c", 1, false, false)]);
+        assert_eq!(w.nodes.len(), 2);
+        assert_eq!(w.nodes[1].id, "c");
+    }
+
+    #[test]
+    fn deep_tree_does_not_panic() {
+        // Regression: depth ≥ 64 must not panic.
+        let mut w = TreeWidget::new();
+        let mut nodes = Vec::new();
+        for depth in 0..128 {
+            nodes.push(node(&format!("n{depth}"), depth, true, true));
+        }
+        w.nodes = nodes;
+        // Should not panic.
+        let vis = w.visible_indices();
+        assert_eq!(vis.len(), 128);
     }
 }

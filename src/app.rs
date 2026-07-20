@@ -10,6 +10,7 @@ use ratatui::backend::CrosstermBackend;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc;
 
+use crate::cache::EntryCache;
 use crate::config::ResolvedConfig;
 use crate::ldap::LdapClient;
 use crate::tui::log_panel::LogPanel;
@@ -36,6 +37,8 @@ pub enum AppMsg {
     },
     /// Full entry fetched for the attributes panel.
     EntryFetched(ldap3::SearchEntry),
+    /// A toggle key was pressed; pages should re-render with updated config.
+    ConfigChanged(Box<ResolvedConfig>),
 }
 
 // Manual Debug for AppMsg because LdapClient doesn't derive Debug.
@@ -54,6 +57,7 @@ impl std::fmt::Debug for AppMsg {
                 entries.len()
             ),
             AppMsg::EntryFetched(e) => write!(f, "EntryFetched({})", e.dn),
+            AppMsg::ConfigChanged(_) => write!(f, "ConfigChanged"),
         }
     }
 }
@@ -72,6 +76,7 @@ pub struct App {
     pub pages: Vec<Box<dyn Page>>,
     pub show_header: bool,
     pub ldap: Option<SharedLdap>,
+    pub cache: EntryCache,
     pub connected: bool,
     pub log: LogPanel,
     pub msg_tx: mpsc::Sender<AppMsg>,
@@ -88,6 +93,7 @@ impl App {
             pages,
             show_header: true,
             ldap: None,
+            cache: EntryCache::new(),
             connected: false,
             log: LogPanel::new(),
             msg_tx,
@@ -116,9 +122,34 @@ impl App {
                 match (code, modifiers) {
                     (KeyCode::Char('q'), KeyModifiers::NONE) => return Ok(true),
                     (KeyCode::Char('h'), KeyModifiers::NONE) => {
-                        self.show_header = !self.show_header
+                        self.show_header = !self.show_header;
                     }
                     (KeyCode::Char('j'), KeyModifiers::CONTROL) => self.next_page(),
+                    (KeyCode::Char('f'), KeyModifiers::NONE) => {
+                        self.config.format = !self.config.format;
+                        self.pages[self.active_page]
+                            .apply_msg(AppMsg::ConfigChanged(Box::new(self.config.clone())));
+                    }
+                    (KeyCode::Char('e'), KeyModifiers::NONE) => {
+                        self.config.emojis = !self.config.emojis;
+                        self.pages[self.active_page]
+                            .apply_msg(AppMsg::ConfigChanged(Box::new(self.config.clone())));
+                    }
+                    (KeyCode::Char('c'), KeyModifiers::NONE) => {
+                        self.config.colors = !self.config.colors;
+                        self.pages[self.active_page]
+                            .apply_msg(AppMsg::ConfigChanged(Box::new(self.config.clone())));
+                    }
+                    (KeyCode::Char('a'), KeyModifiers::NONE) => {
+                        self.config.expand = !self.config.expand;
+                        self.pages[self.active_page]
+                            .apply_msg(AppMsg::ConfigChanged(Box::new(self.config.clone())));
+                    }
+                    (KeyCode::Char('d'), KeyModifiers::NONE) => {
+                        self.config.deleted = !self.config.deleted;
+                        self.pages[self.active_page]
+                            .apply_msg(AppMsg::ConfigChanged(Box::new(self.config.clone())));
+                    }
                     _ => {}
                 }
             }
@@ -153,7 +184,14 @@ impl App {
             AppMsg::Error(e) => {
                 self.log.push(format!("Error: {e}"));
             }
-            AppMsg::ChildEntries { .. } | AppMsg::LdapResult(_) | AppMsg::EntryFetched(_) => {
+            AppMsg::EntryFetched(ref entry) => {
+                // Populate cache with text attributes.
+                if self.config.cache {
+                    self.cache.add(entry.dn.clone(), entry.attrs.clone());
+                }
+                self.pages[self.active_page].apply_msg(msg);
+            }
+            AppMsg::ChildEntries { .. } | AppMsg::LdapResult(_) | AppMsg::ConfigChanged(_) => {
                 self.pages[self.active_page].apply_msg(msg);
             }
         }
