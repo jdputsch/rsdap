@@ -154,6 +154,11 @@ impl App {
                         self.pages[self.active_page]
                             .apply_msg(AppMsg::ConfigChanged(Box::new(self.config.clone())));
                     }
+                    (KeyCode::Char('s'), KeyModifiers::NONE) => {
+                        self.config.attrsort = self.config.attrsort.next();
+                        self.pages[self.active_page]
+                            .apply_msg(AppMsg::ConfigChanged(Box::new(self.config.clone())));
+                    }
                     _ => {}
                 }
             }

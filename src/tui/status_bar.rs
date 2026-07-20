@@ -20,6 +20,16 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, config: &ResolvedConfig, connec
         vec![Span::styled(format!("[{label}]"), style), Span::raw(" ")]
     };
 
+    let cycle = |label: &str, value: &str| {
+        let style = Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD);
+        vec![
+            Span::styled(format!("[{label}: {value}]"), style),
+            Span::raw(" "),
+        ]
+    };
+
     let mut spans = Vec::new();
     spans.extend(indicator("Connected", connected));
     spans.extend(indicator("TLS", config.ldaps));
@@ -28,6 +38,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, config: &ResolvedConfig, connec
     spans.extend(indicator("Expand (a)", config.expand));
     spans.extend(indicator("Emoji (e)", config.emojis));
     spans.extend(indicator("Deleted (d)", config.deleted));
+    spans.extend(cycle("Sort (s)", config.attrsort.label()));
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }

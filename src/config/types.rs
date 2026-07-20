@@ -87,6 +87,24 @@ pub enum AttrSort {
     Desc,
 }
 
+impl AttrSort {
+    pub fn next(&self) -> Self {
+        match self {
+            AttrSort::None => AttrSort::Asc,
+            AttrSort::Asc => AttrSort::Desc,
+            AttrSort::Desc => AttrSort::None,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            AttrSort::None => "OFF",
+            AttrSort::Asc => "ASC",
+            AttrSort::Desc => "DESC",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshConfig {
     pub host: String,
