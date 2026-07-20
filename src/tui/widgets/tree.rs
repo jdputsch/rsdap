@@ -36,7 +36,7 @@ impl TreeWidget {
         // Collect into a temp vec first to release the immutable borrow on `self.nodes`
         // before the mutable borrow on `self.state`.
         let items: Vec<ListItem> = {
-            let mut depth_expanded = vec![true; 64];
+            let mut depth_expanded = [true; 64];
             self.nodes
                 .iter()
                 .filter(|node| {

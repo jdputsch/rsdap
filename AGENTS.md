@@ -14,15 +14,23 @@ See `docs/SPEC-rust-rewrite.md` for the full feature specification.
 
 ## Essential Commands
 
+CI uses [`just`](https://just.systems). Run the same recipes locally before pushing.
+
+```sh
+just ci          # run the full CI suite: fmt → check → clippy → test
+just fmt         # check formatting (cargo fmt --check)
+just check       # type-check without codegen (cargo check --all-targets)
+just clippy      # lint with -D warnings (cargo clippy --all-targets)
+just test        # run all tests (cargo test --all-targets)
+```
+
+Direct cargo commands are also fine for day-to-day use:
+
 ```sh
 cargo build                    # debug build
 cargo build --release          # release build
 cargo run -- <args>            # run the binary
-cargo check                    # fast type-check without codegen
-cargo test                     # run all tests
-cargo clippy -- -D warnings    # lint (all warnings are errors in CI)
-cargo fmt                      # format in place
-cargo fmt --check              # check formatting (CI mode)
+cargo fmt                      # format in place (no --check)
 ```
 
 ---
