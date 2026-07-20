@@ -34,6 +34,8 @@ pub enum AppMsg {
         parent_dn: String,
         entries: Vec<ldap3::SearchEntry>,
     },
+    /// Full entry fetched for the attributes panel.
+    EntryFetched(ldap3::SearchEntry),
 }
 
 // Manual Debug for AppMsg because LdapClient doesn't derive Debug.
@@ -51,6 +53,7 @@ impl std::fmt::Debug for AppMsg {
                 "ChildEntries {{ parent_dn: {parent_dn:?}, count: {} }}",
                 entries.len()
             ),
+            AppMsg::EntryFetched(e) => write!(f, "EntryFetched({})", e.dn),
         }
     }
 }
@@ -150,7 +153,7 @@ impl App {
             AppMsg::Error(e) => {
                 self.log.push(format!("Error: {e}"));
             }
-            AppMsg::ChildEntries { .. } | AppMsg::LdapResult(_) => {
+            AppMsg::ChildEntries { .. } | AppMsg::LdapResult(_) | AppMsg::EntryFetched(_) => {
                 self.pages[self.active_page].apply_msg(msg);
             }
         }

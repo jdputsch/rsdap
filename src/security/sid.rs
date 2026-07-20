@@ -23,17 +23,46 @@ pub struct Sid {
 impl Sid {
     /// Parse a SID from its binary representation.
     pub fn parse(bytes: &[u8]) -> Result<(Self, usize), SidError> {
-        todo!(
-            "parse: revision(1) + sub_authority_count(1) + identifier_authority(6) \
-             + sub_authority_count * u32_le, return (Sid, bytes_consumed)"
-        )
+        if bytes.len() < 8 {
+            return Err(SidError::TooShort);
+        }
+        let revision = bytes[0];
+        if revision != 1 {
+            return Err(SidError::InvalidRevision(revision));
+        }
+        let sub_count = bytes[1] as usize;
+        let needed = 8 + sub_count * 4;
+        if bytes.len() < needed {
+            return Err(SidError::TooShort);
+        }
+        let mut authority = [0u8; 6];
+        authority.copy_from_slice(&bytes[2..8]);
+        let mut sub_authorities = Vec::with_capacity(sub_count);
+        for i in 0..sub_count {
+            let off = 8 + i * 4;
+            sub_authorities.push(u32::from_le_bytes([
+                bytes[off],
+                bytes[off + 1],
+                bytes[off + 2],
+                bytes[off + 3],
+            ]));
+        }
+        Ok((
+            Sid {
+                revision,
+                identifier_authority: authority,
+                sub_authorities,
+            },
+            needed,
+        ))
     }
 
     /// Return the well-known name for this SID, if one exists.
     pub fn well_known_name(&self) -> Option<&'static str> {
+        let s = self.to_string();
         WELL_KNOWN_SIDS
             .iter()
-            .find(|(s, _)| s == &self.to_string().as_str())
+            .find(|(sid, _)| *sid == s.as_str())
             .map(|(_, n)| *n)
     }
 }
@@ -114,3 +143,32 @@ static WELL_KNOWN_SIDS: &[(&str, &str)] = &[
     ("S-1-16-20480", "Protected Process Mandatory Level"),
     ("S-1-16-28672", "Secure Process Mandatory Level"),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sid_system() {
+        // S-1-5-18 (SYSTEM) binary: revision=1, count=1, authority=5, sub=18
+        let bytes: &[u8] = &[1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0];
+        let (sid, consumed) = Sid::parse(bytes).unwrap();
+        assert_eq!(sid.to_string(), "S-1-5-18");
+        assert_eq!(consumed, 12);
+        assert_eq!(sid.well_known_name(), Some("SYSTEM"));
+    }
+
+    #[test]
+    fn sid_everyone() {
+        // S-1-1-0: revision=1, count=1, authority=1, sub=0
+        let bytes: &[u8] = &[1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0];
+        let (sid, _) = Sid::parse(bytes).unwrap();
+        assert_eq!(sid.to_string(), "S-1-1-0");
+        assert_eq!(sid.well_known_name(), Some("Everyone"));
+    }
+
+    #[test]
+    fn sid_too_short() {
+        assert!(Sid::parse(&[1, 1, 0, 0]).is_err());
+    }
+}

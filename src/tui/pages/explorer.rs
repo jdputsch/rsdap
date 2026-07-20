@@ -8,7 +8,9 @@ use ratatui::layout::Rect;
 use tokio::sync::mpsc::Sender;
 
 use super::Page;
-use crate::app::{AppMsg, LdapResult, SharedLdap};
+use crate::app::{AppMsg, SharedLdap};
+use crate::config::TimeFmt;
+use crate::formats::attributes::{format_bin_value, format_value};
 use crate::formats::display::{emoji_for_entry, entry_display_name};
 use crate::ldap::search::{SearchParams, search_all};
 use crate::tui::widgets::tree::{TreeNode, TreeWidget};
@@ -18,11 +20,15 @@ pub struct ExplorerPage {
     tree: TreeWidget,
     ldap: Option<SharedLdap>,
     root_dn: Option<String>,
-    /// Page config values needed for search.
     page_size: u32,
     emojis: bool,
-    /// Currently selected entry's attributes for the right panel.
-    selected_attrs: Vec<(String, Vec<String>)>,
+    format_attrs: bool,
+    timefmt: TimeFmt,
+    offset: i32,
+    /// Sorted (name, values) pairs for the attributes panel.
+    attr_rows: Vec<(String, Vec<String>)>,
+    /// DN of the entry currently shown in the attributes panel.
+    attr_dn: Option<String>,
 }
 
 impl ExplorerPage {
@@ -34,7 +40,11 @@ impl ExplorerPage {
             root_dn: None,
             page_size: 800,
             emojis: true,
-            selected_attrs: Vec::new(),
+            format_attrs: true,
+            timefmt: TimeFmt::Eu,
+            offset: 0,
+            attr_rows: Vec::new(),
+            attr_dn: None,
         }
     }
 
@@ -73,6 +83,50 @@ impl ExplorerPage {
             }
         });
     }
+
+    /// Fire an async task to fetch all attributes for `dn` (Base scope, all attrs).
+    fn fetch_entry(&self, dn: String) {
+        let Some(ldap) = self.ldap.clone() else {
+            return;
+        };
+        let tx = self.tx.clone();
+
+        tokio::spawn(async move {
+            let mut guard = ldap.lock().await;
+            // "*" = all user attributes; "+" = operational attributes
+            let result = guard
+                .inner
+                .search(&dn, Scope::Base, "(objectClass=*)", vec!["*", "+"])
+                .await;
+            match result {
+                Ok(res) => match res.success() {
+                    Ok((entries, _)) => {
+                        if let Some(raw) = entries.into_iter().next() {
+                            let entry = ldap3::SearchEntry::construct(raw);
+                            let _ = tx.send(AppMsg::EntryFetched(entry)).await;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppMsg::Error(e.to_string())).await;
+                    }
+                },
+                Err(e) => {
+                    let _ = tx.send(AppMsg::Error(e.to_string())).await;
+                }
+            }
+        });
+    }
+
+    fn on_selection_change(&mut self) {
+        if let Some(node) = self.tree.selected_node() {
+            let dn = node.id.clone();
+            if self.attr_dn.as_deref() != Some(&dn) {
+                self.attr_dn = Some(dn.clone());
+                self.attr_rows.clear();
+                self.fetch_entry(dn);
+            }
+        }
+    }
 }
 
 impl Page for ExplorerPage {
@@ -97,9 +151,13 @@ impl Page for ExplorerPage {
 
         self.tree.render(frame, chunks[0], "Tree");
 
-        // Attributes panel
+        let title = match &self.attr_dn {
+            Some(dn) => format!("Attributes — {dn}"),
+            None => "Attributes".to_owned(),
+        };
+
         let items: Vec<ListItem> = self
-            .selected_attrs
+            .attr_rows
             .iter()
             .flat_map(|(name, vals)| {
                 vals.iter().map(move |v| {
@@ -111,8 +169,7 @@ impl Page for ExplorerPage {
             })
             .collect();
 
-        let list =
-            List::new(items).block(Block::default().borders(Borders::ALL).title("Attributes"));
+        let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
         frame.render_widget(list, chunks[1]);
     }
 
@@ -120,32 +177,34 @@ impl Page for ExplorerPage {
         match code {
             KeyCode::Down | KeyCode::Char('j') => {
                 self.tree.select_next();
-                self.update_attrs_panel();
+                self.on_selection_change();
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.tree.select_prev();
-                self.update_attrs_panel();
+                self.on_selection_change();
             }
             KeyCode::Right | KeyCode::Enter => {
                 if let Some(dn) = self.tree.expand_selected() {
                     self.load_children(dn);
                 }
-                self.update_attrs_panel();
+                self.on_selection_change();
             }
             KeyCode::Left => {
                 self.tree.collapse_selected();
             }
             KeyCode::Char('r') => {
-                // Reload: clear children and re-fetch.
                 if let Some(node) = self.tree.selected_node() {
                     let dn = node.id.clone();
                     self.tree.set_children(&dn, Vec::new());
-                    // Mark as not loaded so expand_selected triggers a fetch.
                     if let Some(n) = self.tree.nodes.iter_mut().find(|n| n.id == dn) {
                         n.children_loaded = false;
                         n.expanded = false;
                     }
-                    self.load_children(dn);
+                    self.load_children(dn.clone());
+                    // Re-fetch attributes too.
+                    self.attr_dn = None;
+                    self.attr_rows.clear();
+                    self.fetch_entry(dn);
                 }
             }
             _ => {}
@@ -161,7 +220,6 @@ impl Page for ExplorerPage {
                 self.ldap = Some(client);
                 self.root_dn = Some(root_dn.clone());
 
-                // Seed the tree with the root node and immediately load its children.
                 self.tree.nodes.clear();
                 self.tree.nodes.push(TreeNode {
                     id: root_dn.clone(),
@@ -172,8 +230,12 @@ impl Page for ExplorerPage {
                     children_loaded: false,
                 });
                 self.tree.state.select(Some(0));
-                self.load_children(root_dn);
+                self.load_children(root_dn.clone());
+                // Fetch attributes for the root node immediately.
+                self.attr_dn = Some(root_dn.clone());
+                self.fetch_entry(root_dn);
             }
+
             AppMsg::ChildEntries { parent_dn, entries } => {
                 let emojis = self.emojis;
                 let children: Vec<TreeNode> = entries
@@ -188,7 +250,6 @@ impl Page for ExplorerPage {
                         } else {
                             display
                         };
-                        // A node has children if it is a container class.
                         let has_children = object_classes.iter().any(|c| {
                             matches!(
                                 c.to_lowercase().as_str(),
@@ -204,7 +265,6 @@ impl Page for ExplorerPage {
                                     | "samdomainbase"
                             )
                         });
-                        // Depth is parent depth + 1; look up parent depth.
                         let parent_depth = self
                             .tree
                             .nodes
@@ -224,21 +284,54 @@ impl Page for ExplorerPage {
                     .collect();
 
                 self.tree.set_children(&parent_dn, children);
-                self.update_attrs_panel();
             }
-            _ => {}
-        }
-    }
-}
 
-impl ExplorerPage {
-    fn update_attrs_panel(&mut self) {
-        // For now, show the DN and objectClass of the selected node as a placeholder.
-        // Phase 4 will fire a full attribute fetch and display all values.
-        self.selected_attrs.clear();
-        if let Some(node) = self.tree.selected_node() {
-            self.selected_attrs
-                .push(("dn".to_owned(), vec![node.id.clone()]));
+            AppMsg::EntryFetched(entry) => {
+                // Only update if this is still the selected entry.
+                if self.attr_dn.as_deref() != Some(&entry.dn) {
+                    return;
+                }
+
+                let fmt = &self.timefmt;
+                let offset = self.offset;
+                let do_format = self.format_attrs;
+
+                let mut rows: Vec<(String, Vec<String>)> = Vec::new();
+
+                // Text attributes — format if requested.
+                let mut attr_names: Vec<&String> = entry.attrs.keys().collect();
+                attr_names.sort_by_key(|s| s.to_lowercase());
+                for name in attr_names {
+                    let vals = &entry.attrs[name];
+                    let formatted: Vec<String> = vals
+                        .iter()
+                        .map(|v| {
+                            if do_format {
+                                format_value(name, v, fmt, offset)
+                            } else {
+                                v.clone()
+                            }
+                        })
+                        .collect();
+                    rows.push((name.clone(), formatted));
+                }
+
+                // Binary attributes — always formatted (SID/GUID need byte decoding).
+                let mut bin_names: Vec<&String> = entry.bin_attrs.keys().collect();
+                bin_names.sort_by_key(|s| s.to_lowercase());
+                for name in bin_names {
+                    let vals = &entry.bin_attrs[name];
+                    let formatted: Vec<String> =
+                        vals.iter().map(|b| format_bin_value(name, b)).collect();
+                    rows.push((name.clone(), formatted));
+                }
+
+                // Re-sort after merging text + binary.
+                rows.sort_by_key(|a| a.0.to_lowercase());
+                self.attr_rows = rows;
+            }
+
+            _ => {}
         }
     }
 }
