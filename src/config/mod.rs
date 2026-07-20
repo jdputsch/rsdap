@@ -24,13 +24,12 @@ pub fn resolve(args: cli::Cli, file: Option<file::FileConfig>) -> Result<Resolve
                 println!("rsdap {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
-            cli::Commands::InitConfig { output } => {
-                let yaml = file::sample_config();
-                match output {
-                    Some(path) => std::fs::write(path, yaml)
-                        .map_err(|e| anyhow::anyhow!("writing {path}: {e}"))?,
-                    None => print!("{yaml}"),
-                }
+            cli::Commands::InitConfig {
+                output,
+                default,
+                yes,
+            } => {
+                init_config(output.as_deref(), *default, *yes)?;
                 std::process::exit(0);
             }
         }
@@ -391,6 +390,50 @@ fn build_ssh_config(
         auth,
         ignore_host_key: args.ssh_ignore_host_key,
     }))
+}
+
+// ── init-config subcommand ─────────────────────────────────────────────────────
+
+fn init_config(output: Option<&str>, default: bool, yes: bool) -> Result<()> {
+    let yaml = file::sample_config();
+
+    // --default: write to the platform config location
+    if default {
+        let path = file::default_config_path()?;
+        if path.exists() && !yes {
+            bail!(
+                "config file already exists at {}\nRe-run with --yes to overwrite",
+                path.display()
+            );
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| anyhow::anyhow!("creating {}: {e}", parent.display()))?;
+        }
+        std::fs::write(&path, yaml)
+            .map_err(|e| anyhow::anyhow!("writing {}: {e}", path.display()))?;
+        println!("Config written to {}", path.display());
+        return Ok(());
+    }
+
+    // --output <path>: write to an explicit file
+    if let Some(path) = output {
+        if path == "-" {
+            print!("{yaml}");
+            return Ok(());
+        }
+        let p = std::path::Path::new(path);
+        if p.exists() && !yes {
+            bail!("file already exists at {path}\nRe-run with --yes to overwrite");
+        }
+        std::fs::write(p, yaml).map_err(|e| anyhow::anyhow!("writing {path}: {e}"))?;
+        println!("Config written to {path}");
+        return Ok(());
+    }
+
+    // no flags: print to stdout
+    print!("{yaml}");
+    Ok(())
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────

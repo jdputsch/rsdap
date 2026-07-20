@@ -202,11 +202,19 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Print a sample config to stdout (or write to --output)
+    /// Print a sample config to stdout, write to --output, or install to the default platform location
     InitConfig {
-        /// Output file path
+        /// Output file path (use - for stdout)
         #[arg(long)]
         output: Option<String>,
+
+        /// Write to the default platform config location (~/.config/rsdap/config.yaml on Unix)
+        #[arg(long)]
+        default: bool,
+
+        /// Overwrite an existing file without prompting (required when --default would overwrite)
+        #[arg(long)]
+        yes: bool,
     },
     /// Print version information
     Version,

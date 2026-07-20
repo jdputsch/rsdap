@@ -108,6 +108,12 @@ fn platform_strategy() -> Result<impl BaseStrategy> {
     etcetera::base_strategy::Windows::new().map_err(anyhow::Error::from)
 }
 
+/// Return the default platform config path (does not require it to exist).
+pub fn default_config_path() -> Result<PathBuf> {
+    let strategy = platform_strategy()?;
+    Ok(strategy.config_dir().join("rsdap").join("config.yaml"))
+}
+
 /// Generate a fully-documented sample config YAML string.
 pub fn sample_config() -> &'static str {
     include_str!("../../docs/sample-config.yaml")
