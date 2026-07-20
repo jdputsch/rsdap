@@ -1,6 +1,6 @@
 //! LDAP search operations: paged, scoped, with deleted-object support.
 
-use anyhow::Result;
+use ldap3::adapters::{Adapter, EntriesOnly, PagedResults};
 use ldap3::{Scope, SearchEntry};
 
 use crate::ldap::connection::LdapError;
@@ -14,12 +14,33 @@ pub struct SearchParams {
     pub include_deleted: bool,
 }
 
-/// Execute a paged LDAP search, collecting all result pages.
+/// Execute a paged LDAP search, collecting all result pages into one vec.
 pub async fn search_all(
     ldap: &mut ldap3::Ldap,
     params: &SearchParams,
 ) -> Result<Vec<SearchEntry>, LdapError> {
-    todo!("run paged search using ldap3 paged-results control, return all entries")
+    let adapters: Vec<Box<dyn Adapter<_, _>>> = vec![
+        Box::new(EntriesOnly::new()),
+        Box::new(PagedResults::new(params.page_size as i32)),
+    ];
+
+    let mut stream = ldap
+        .streaming_search_with(
+            adapters,
+            &params.base,
+            params.scope,
+            &params.filter,
+            params.attrs.clone(),
+        )
+        .await?;
+
+    let mut entries = Vec::new();
+    while let Some(entry) = stream.next().await? {
+        entries.push(SearchEntry::construct(entry));
+    }
+    stream.finish().await.success()?;
+
+    Ok(entries)
 }
 
 /// Auto-wrap a bare search term: `(|(samAccountName=X)(cn=X)(ou=X)(name=X))`
