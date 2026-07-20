@@ -460,8 +460,7 @@ impl Page for ExplorerPage {
 
                 let mut rows: Vec<(String, Vec<String>)> = Vec::new();
 
-                let mut attr_names: Vec<&String> = entry.attrs.keys().collect();
-                attr_names.sort_by_key(|s| s.to_lowercase());
+                let attr_names: Vec<&String> = entry.attrs.keys().collect();
                 for name in attr_names {
                     let vals = &entry.attrs[name];
                     let formatted: Vec<String> = vals
@@ -477,8 +476,7 @@ impl Page for ExplorerPage {
                     rows.push((name.clone(), formatted));
                 }
 
-                let mut bin_names: Vec<&String> = entry.bin_attrs.keys().collect();
-                bin_names.sort_by_key(|s| s.to_lowercase());
+                let bin_names: Vec<&String> = entry.bin_attrs.keys().collect();
                 for name in bin_names {
                     let vals = &entry.bin_attrs[name];
                     let formatted: Vec<String> =
@@ -486,8 +484,6 @@ impl Page for ExplorerPage {
                     rows.push((name.clone(), formatted));
                 }
 
-                // Store raw (alphabetically pre-sorted); display_rows applies attrsort.
-                rows.sort_by_key(|a| a.0.to_lowercase());
                 self.raw_rows = rows;
                 self.attr_scroll = 0;
             }
