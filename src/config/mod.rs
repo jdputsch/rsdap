@@ -52,18 +52,10 @@ pub fn resolve(args: cli::Cli, file: Option<file::FileConfig>) -> Result<Resolve
 
     let global = file.as_ref().map(|f| &f.global);
 
-    // ── Server / host ──────────────────────────────────────────────────────────
-    let server = args
-        .target
-        .as_deref()
-        // strip scheme if provided on the positional arg
-        .map(|t| {
-            t.trim_start_matches("ldaps://")
-                .trim_start_matches("ldap://")
-                .to_owned()
-        })
-        .or_else(|| conn.and_then(|c| c.server.clone()))
-        .unwrap_or_else(|| "127.0.0.1".to_owned());
+    // ── Server / host / port from positional target ────────────────────────────
+    // Accepted forms: hostname, hostname:port, ldap://hostname, ldap://hostname:port,
+    // ldaps://hostname, ldaps://hostname:port.
+    let (server, port_from_url) = parse_target(args.target.as_deref(), conn);
 
     // ── Auth method ─────────────────────────────────────────────────────────────
     let auth = resolve_auth(&args, conn)?;
@@ -93,8 +85,10 @@ pub fn resolve(args: cli::Cli, file: Option<file::FileConfig>) -> Result<Resolve
     let ldaps = args.ldaps || conn.and_then(|c| c.ldaps).unwrap_or(false);
 
     let default_port = if ldaps { 636 } else { 389 };
+    // Precedence: explicit -P flag > port embedded in URL > file config > default
     let port = args
         .port
+        .or(port_from_url)
         .or_else(|| conn.and_then(|c| c.port))
         .unwrap_or(default_port);
 
@@ -317,6 +311,56 @@ fn prompt_password(username: &str) -> Result<String> {
 }
 
 // ── Scalar parsers ─────────────────────────────────────────────────────────────
+
+/// Parse the positional `target` argument into `(server, Option<port>)`.
+///
+/// Accepted forms:
+/// - `hostname`
+/// - `hostname:port`
+/// - `ldap://hostname`
+/// - `ldap://hostname:port`
+/// - `ldaps://hostname`
+/// - `ldaps://hostname:port`
+fn parse_target(
+    target: Option<&str>,
+    conn: Option<&file::ConnectionConfig>,
+) -> (String, Option<u16>) {
+    let raw = match target {
+        Some(t) => t,
+        None => {
+            return (
+                conn.and_then(|c| c.server.clone())
+                    .unwrap_or_else(|| "127.0.0.1".to_owned()),
+                None,
+            );
+        }
+    };
+
+    // Strip scheme
+    let without_scheme = raw
+        .trim_start_matches("ldaps://")
+        .trim_start_matches("ldap://");
+
+    // Split host:port — handle IPv6 [::1]:389 as well
+    if without_scheme.starts_with('[') {
+        // IPv6 bracketed: [::1] or [::1]:port
+        if let Some(bracket_end) = without_scheme.find(']') {
+            let host = without_scheme[1..bracket_end].to_owned();
+            let port = without_scheme
+                .get(bracket_end + 2..) // skip ']:'
+                .and_then(|p| p.parse::<u16>().ok());
+            return (host, port);
+        }
+    }
+
+    if let Some((host, port_str)) = without_scheme.rsplit_once(':') {
+        if let Ok(port) = port_str.parse::<u16>() {
+            return (host.to_owned(), Some(port));
+        }
+    }
+
+    (without_scheme.to_owned(), None)
+}
 
 fn parse_backend(s: &str) -> Result<BackendFlavor> {
     match s.to_ascii_lowercase().as_str() {
@@ -575,6 +619,40 @@ mod tests {
         let c = cli(&["host", "-S", "-P", "3269"]);
         let r = resolve(c, None).unwrap();
         assert_eq!(r.port, 3269);
+    }
+
+    // ── port / server parsing from URL target ──────────────────────────────────
+
+    #[test]
+    fn port_embedded_in_plain_url() {
+        let c = cli(&["ldap://localhost:22389"]);
+        let r = resolve(c, None).unwrap();
+        assert_eq!(r.server, "localhost");
+        assert_eq!(r.port, 22389);
+    }
+
+    #[test]
+    fn port_embedded_in_ldaps_url() {
+        let c = cli(&["ldaps://dc.corp.local:3269"]);
+        let r = resolve(c, None).unwrap();
+        assert_eq!(r.server, "dc.corp.local");
+        assert_eq!(r.port, 3269);
+    }
+
+    #[test]
+    fn port_embedded_in_bare_host() {
+        let c = cli(&["dc.corp.local:389"]);
+        let r = resolve(c, None).unwrap();
+        assert_eq!(r.server, "dc.corp.local");
+        assert_eq!(r.port, 389);
+    }
+
+    #[test]
+    fn explicit_flag_overrides_url_port() {
+        // -P 636 beats the :389 in the URL
+        let c = cli(&["ldap://localhost:389", "-P", "636"]);
+        let r = resolve(c, None).unwrap();
+        assert_eq!(r.port, 636);
     }
 
     // ── timefmt / attrsort parsing ─────────────────────────────────────────────
