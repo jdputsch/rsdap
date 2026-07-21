@@ -148,7 +148,27 @@ Phases are ordered so each one produces a **runnable, manually testable result**
 
 ---
 
-## Phase 6 — Groups Page
+## Phase 6 — Connection Form & Reconnect
+
+**Goal:** `l` opens the connection configuration form at runtime; `Ctrl+R` reconnects; `Ctrl+U` issues StartTLS.
+
+**Files to implement:**
+- Connection config modal (`src/tui/connection_form.rs` or inline in `app.rs`)
+- `LdapClient::start_tls` (stubbed in `connection.rs`)
+- `AppMsg::Disconnected` handling — prompt to reconnect
+- `src/net/socks.rs` — implement when SOCKS proxy field is exercised
+- `src/net/ssh.rs` — implement SSH tunnel when SSH section is exercised
+
+**Tests:**
+- Unit: connection form pre-populates fields from `ResolvedConfig`
+- Unit: "Update" action produces a new `ResolvedConfig` matching form values
+- Integration (`#[ignore]`): StartTLS upgrade on a plain connection
+
+**Manual verification:** Open form with `l`; change server; press Update; app reconnects to new host.
+
+---
+
+## Phase 7 — Groups Page
 
 **Goal:** The Groups page resolves group members and the groups an object belongs to, and supports adding/removing membership.
 
@@ -169,7 +189,7 @@ Phases are ordered so each one produces a **runnable, manually testable result**
 
 ---
 
-## Phase 7 — Write Operations & Export
+## Phase 8 — Write Operations & Export
 
 **Goal:** Complete Explorer write operations (create, delete, rename, attribute edit) and JSON export.
 
@@ -187,26 +207,6 @@ Phases are ordered so each one produces a **runnable, manually testable result**
 - Integration (`#[ignore]`): create an OU, rename it, add an attribute, delete the OU; assert clean state after
 
 **Manual verification:** Create an OU; rename it; add/edit/delete an attribute; `Ctrl+S` produces a valid JSON file in `data/`.
-
----
-
-## Phase 8 — Connection Form & Reconnect
-
-**Goal:** `l` opens the connection configuration form at runtime; `Ctrl+R` reconnects; `Ctrl+U` issues StartTLS.
-
-**Files to implement:**
-- Connection config modal (`src/tui/connection_form.rs` or inline in `app.rs`)
-- `LdapClient::start_tls` (stubbed in `connection.rs`)
-- `AppMsg::Disconnected` handling — prompt to reconnect
-- `src/net/socks.rs` — implement when SOCKS proxy field is exercised
-- `src/net/ssh.rs` — implement SSH tunnel when SSH section is exercised
-
-**Tests:**
-- Unit: connection form pre-populates fields from `ResolvedConfig`
-- Unit: "Update" action produces a new `ResolvedConfig` matching form values
-- Integration (`#[ignore]`): StartTLS upgrade on a plain connection
-
-**Manual verification:** Open form with `l`; change server; press Update; app reconnects to new host.
 
 ---
 
@@ -237,4 +237,4 @@ Implemented once the core browser is solid. Each item is its own sub-phase:
 | `formats/display.rs` — `entry_display_name`, `emoji_for_entry` | 3 |
 | `tui/layout.rs` — `build_layout` | 1 (already wired) |
 | `tui/widgets/tree.rs` — skeleton | 3 (extend) |
-| `export/json.rs` — full implementation | 7 |
+| `export/json.rs` — full implementation | 8 |

@@ -37,6 +37,12 @@ pub enum AppMsg {
     },
     /// Full entry fetched for the attributes panel.
     EntryFetched(ldap3::SearchEntry),
+    /// Search completed; carries result entries and elapsed milliseconds.
+    SearchDone {
+        filter: String,
+        entries: Vec<ldap3::SearchEntry>,
+        elapsed_ms: u64,
+    },
     /// A toggle key was pressed; pages should re-render with updated config.
     ConfigChanged(Box<ResolvedConfig>),
 }
@@ -57,6 +63,9 @@ impl std::fmt::Debug for AppMsg {
                 entries.len()
             ),
             AppMsg::EntryFetched(e) => write!(f, "EntryFetched({})", e.dn),
+            AppMsg::SearchDone {
+                filter, entries, ..
+            } => write!(f, "SearchDone({filter:?}, {} entries)", entries.len()),
             AppMsg::ConfigChanged(_) => write!(f, "ConfigChanged"),
         }
     }
@@ -200,7 +209,10 @@ impl App {
                 }
                 self.pages[self.active_page].apply_msg(msg);
             }
-            AppMsg::ChildEntries { .. } | AppMsg::LdapResult(_) | AppMsg::ConfigChanged(_) => {
+            AppMsg::ChildEntries { .. }
+            | AppMsg::LdapResult(_)
+            | AppMsg::ConfigChanged(_)
+            | AppMsg::SearchDone { .. } => {
                 self.pages[self.active_page].apply_msg(msg);
             }
         }
