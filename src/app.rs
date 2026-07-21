@@ -140,33 +140,27 @@ impl App {
                     (KeyCode::Char('j'), KeyModifiers::CONTROL) => self.next_page(),
                     (KeyCode::Char('f'), KeyModifiers::NONE) => {
                         self.config.format = !self.config.format;
-                        self.pages[self.active_page]
-                            .apply_msg(AppMsg::ConfigChanged(Box::new(self.config.clone())));
+                        self.broadcast_config();
                     }
                     (KeyCode::Char('e'), KeyModifiers::NONE) => {
                         self.config.emojis = !self.config.emojis;
-                        self.pages[self.active_page]
-                            .apply_msg(AppMsg::ConfigChanged(Box::new(self.config.clone())));
+                        self.broadcast_config();
                     }
                     (KeyCode::Char('c'), KeyModifiers::NONE) => {
                         self.config.colors = !self.config.colors;
-                        self.pages[self.active_page]
-                            .apply_msg(AppMsg::ConfigChanged(Box::new(self.config.clone())));
+                        self.broadcast_config();
                     }
                     (KeyCode::Char('a'), KeyModifiers::NONE) => {
                         self.config.expand = !self.config.expand;
-                        self.pages[self.active_page]
-                            .apply_msg(AppMsg::ConfigChanged(Box::new(self.config.clone())));
+                        self.broadcast_config();
                     }
                     (KeyCode::Char('d'), KeyModifiers::NONE) => {
                         self.config.deleted = !self.config.deleted;
-                        self.pages[self.active_page]
-                            .apply_msg(AppMsg::ConfigChanged(Box::new(self.config.clone())));
+                        self.broadcast_config();
                     }
                     (KeyCode::Char('s'), KeyModifiers::NONE) => {
                         self.config.attrsort = self.config.attrsort.next();
-                        self.pages[self.active_page]
-                            .apply_msg(AppMsg::ConfigChanged(Box::new(self.config.clone())));
+                        self.broadcast_config();
                     }
                     _ => {}
                 }
@@ -187,12 +181,14 @@ impl App {
                 self.ldap = Some(client.clone());
                 let tls_tag = if tls { " [TLS]" } else { "" };
                 self.log.push(format!("Connected to {root_dn}{tls_tag}"));
-                // Forward root_dn to the explorer page to kick off initial tree load.
-                self.pages[self.active_page].apply_msg(AppMsg::Connected {
-                    root_dn,
-                    tls,
-                    client,
-                });
+                // Broadcast to ALL pages so every page gets the ldap handle and root_dn.
+                for page in &mut self.pages {
+                    page.apply_msg(AppMsg::Connected {
+                        root_dn: root_dn.clone(),
+                        tls,
+                        client: client.clone(),
+                    });
+                }
             }
             AppMsg::Disconnected => {
                 self.connected = false;
@@ -209,10 +205,14 @@ impl App {
                 }
                 self.pages[self.active_page].apply_msg(msg);
             }
-            AppMsg::ChildEntries { .. }
-            | AppMsg::LdapResult(_)
-            | AppMsg::ConfigChanged(_)
-            | AppMsg::SearchDone { .. } => {
+            // ConfigChanged must reach every page so toggling on one page
+            // takes effect when the user switches to another.
+            AppMsg::ConfigChanged(_) => {
+                for page in &mut self.pages {
+                    page.apply_msg(AppMsg::ConfigChanged(Box::new(self.config.clone())));
+                }
+            }
+            AppMsg::ChildEntries { .. } | AppMsg::LdapResult(_) | AppMsg::SearchDone { .. } => {
                 self.pages[self.active_page].apply_msg(msg);
             }
         }
@@ -220,6 +220,13 @@ impl App {
 
     fn next_page(&mut self) {
         self.active_page = (self.active_page + 1) % self.pages.len();
+    }
+
+    fn broadcast_config(&mut self) {
+        let cfg = Box::new(self.config.clone());
+        for page in &mut self.pages {
+            page.apply_msg(AppMsg::ConfigChanged(cfg.clone()));
+        }
     }
 }
 
