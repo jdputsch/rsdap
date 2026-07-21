@@ -19,10 +19,9 @@ use crate::formats::attributes::{
     format_bin_value, format_bitset_rows, format_value, is_bitset_attr,
 };
 use crate::formats::colors::{attr_value_color, bin_attr_value_color};
-use crate::formats::display::entry_display_name;
 use crate::formats::timestamp::{filetime_parts, generalized_time_parts};
 use crate::ldap::search::{SearchParams, auto_wrap_filter, search_all};
-use crate::tui::widgets::form::{FieldKind, FormField, ModalForm};
+use crate::tui::widgets::form::{FormField, ModalForm};
 
 // ── Predefined query library ────────────────────────────────────────────────
 
@@ -81,9 +80,6 @@ enum RawVal {
     Text(String),
     Bin(Vec<u8>),
 }
-
-/// (attribute_name, values) pairs for one LDAP entry.
-type AttrRows = Vec<(String, Vec<RawVal>)>;
 
 // ── History entry ────────────────────────────────────────────────────────────
 
@@ -149,12 +145,13 @@ pub struct SearchPage {
     // Filter input.
     filter_input: String,
 
-    // Results.
-    result_entries: Vec<(String, AttrRows)>, // (dn, attrs)
+    // Results: just the DN list; attrs are fetched lazily on selection.
+    result_dns: Vec<String>,
     result_scroll: usize,
 
-    // Selected result's attributes.
+    // Selected result's attributes (lazily fetched).
     selected_result: Option<usize>,
+    selected_dn: Option<String>,
     raw_rows: Vec<(String, Vec<RawVal>)>,
     attr_scroll: usize,
 
@@ -197,9 +194,10 @@ impl SearchPage {
             timefmt: TimeFmt::Eu,
             offset: 0,
             filter_input: String::new(),
-            result_entries: Vec::new(),
+            result_dns: Vec::new(),
             result_scroll: 0,
             selected_result: None,
+            selected_dn: None,
             raw_rows: Vec::new(),
             attr_scroll: 0,
             library_selected: 0,
@@ -253,17 +251,25 @@ impl SearchPage {
         self.search_started = Some(Instant::now());
 
         tokio::spawn(async move {
+            // Fetch only display-name attrs; full entry is loaded lazily on selection.
             let params = SearchParams {
                 base,
                 scope,
                 filter: filter.clone(),
-                attrs: vec!["*".to_owned(), "+".to_owned()],
+                attrs: vec![
+                    "objectClass".to_owned(),
+                    "cn".to_owned(),
+                    "ou".to_owned(),
+                    "dc".to_owned(),
+                    "name".to_owned(),
+                    "uid".to_owned(),
+                    "sAMAccountName".to_owned(),
+                ],
                 page_size,
                 include_deleted: false,
             };
             let mut guard = ldap.lock().await;
             let result = search_all(&mut guard.inner, &params).await;
-            let elapsed_ms = 0u64; // placeholder — real timing below
             drop(guard);
 
             match result {
@@ -272,10 +278,50 @@ impl SearchPage {
                         .send(AppMsg::SearchDone {
                             filter,
                             entries,
-                            elapsed_ms,
+                            elapsed_ms: 0,
                         })
                         .await;
                 }
+                Err(e) => {
+                    // Send both the error message AND a SearchDone with empty results so
+                    // searching=true doesn't get stuck.
+                    let _ = tx.send(AppMsg::Error(e.to_string())).await;
+                    let _ = tx
+                        .send(AppMsg::SearchDone {
+                            filter,
+                            entries: vec![],
+                            elapsed_ms: 0,
+                        })
+                        .await;
+                }
+            }
+        });
+    }
+
+    /// Fire an async task to fetch all attributes for a DN (same as ExplorerPage).
+    fn fetch_entry(&self, dn: String) {
+        let Some(ldap) = self.ldap.clone() else {
+            return;
+        };
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let mut guard = ldap.lock().await;
+            let result = guard
+                .inner
+                .search(&dn, ldap3::Scope::Base, "(objectClass=*)", vec!["*", "+"])
+                .await;
+            match result {
+                Ok(res) => match res.success() {
+                    Ok((entries, _)) => {
+                        if let Some(raw) = entries.into_iter().next() {
+                            let entry = ldap3::SearchEntry::construct(raw);
+                            let _ = tx.send(AppMsg::EntryFetched(entry)).await;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppMsg::Error(e.to_string())).await;
+                    }
+                },
                 Err(e) => {
                     let _ = tx.send(AppMsg::Error(e.to_string())).await;
                 }
@@ -453,12 +499,15 @@ impl SearchPage {
     }
 
     fn select_result(&mut self, idx: usize) {
-        if idx >= self.result_entries.len() {
+        if idx >= self.result_dns.len() {
             return;
         }
+        let dn = self.result_dns[idx].clone();
         self.selected_result = Some(idx);
-        self.raw_rows = self.result_entries[idx].1.clone();
+        self.selected_dn = Some(dn.clone());
+        self.raw_rows.clear();
         self.attr_scroll = 0;
+        self.fetch_entry(dn);
     }
 }
 
@@ -496,7 +545,9 @@ impl Page for SearchPage {
     }
 
     fn captures_input(&self) -> bool {
-        self.settings_open || self.focus == Focus::Filter
+        // Only the settings modal truly captures all input (suppresses global keys).
+        // The filter text box is handled inside handle_key without blocking globals.
+        self.settings_open
     }
 
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect) {
@@ -645,10 +696,10 @@ impl Page for SearchPage {
                     self.show_history = !self.show_history;
                 }
                 (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
-                    if !self.result_entries.is_empty() {
+                    if !self.result_dns.is_empty() {
                         let next = self
                             .selected_result
-                            .map(|i| (i + 1).min(self.result_entries.len() - 1))
+                            .map(|i| (i + 1).min(self.result_dns.len() - 1))
                             .unwrap_or(0);
                         self.select_result(next);
                     }
@@ -712,49 +763,51 @@ impl Page for SearchPage {
                 elapsed_ms,
             } => {
                 self.searching = false;
-                // Compute elapsed from Instant if available, fall back to msg field.
                 let actual_ms = self
                     .search_started
                     .take()
                     .map(|t| t.elapsed().as_millis() as u64)
                     .unwrap_or(elapsed_ms);
 
+                // Only record history when there was no error (non-empty or genuine zero results).
                 self.history.push(HistoryEntry {
-                    filter: filter.clone(),
+                    filter,
                     result_count: entries.len(),
                     elapsed_ms: actual_ms,
                 });
 
-                // Convert to (dn, raw_rows).
-                self.result_entries = entries
-                    .into_iter()
-                    .map(|entry| {
-                        let mut rows: Vec<(String, Vec<RawVal>)> = Vec::new();
-                        for (name, vals) in &entry.attrs {
-                            rows.push((
-                                name.clone(),
-                                vals.iter().map(|v| RawVal::Text(v.clone())).collect(),
-                            ));
-                        }
-                        for (name, vals) in &entry.bin_attrs {
-                            rows.push((
-                                name.clone(),
-                                vals.iter().map(|b| RawVal::Bin(b.clone())).collect(),
-                            ));
-                        }
-                        (entry.dn, rows)
-                    })
-                    .collect();
-
+                self.result_dns = entries.into_iter().map(|e| e.dn).collect();
                 self.result_scroll = 0;
                 self.selected_result = None;
+                self.selected_dn = None;
                 self.raw_rows.clear();
                 self.attr_scroll = 0;
 
-                if !self.result_entries.is_empty() {
+                if !self.result_dns.is_empty() {
                     self.select_result(0);
                 }
                 self.show_history = false;
+            }
+
+            AppMsg::EntryFetched(entry) => {
+                // Only populate if this is still the selected entry.
+                if self.selected_dn.as_deref() == Some(&entry.dn) {
+                    let mut rows: Vec<(String, Vec<RawVal>)> = Vec::new();
+                    for (name, vals) in &entry.attrs {
+                        rows.push((
+                            name.clone(),
+                            vals.iter().map(|v| RawVal::Text(v.clone())).collect(),
+                        ));
+                    }
+                    for (name, vals) in &entry.bin_attrs {
+                        rows.push((
+                            name.clone(),
+                            vals.iter().map(|b| RawVal::Bin(b.clone())).collect(),
+                        ));
+                    }
+                    self.raw_rows = rows;
+                    self.attr_scroll = 0;
+                }
             }
 
             AppMsg::ConfigChanged(cfg) => {
@@ -775,17 +828,17 @@ impl SearchPage {
         } else {
             Style::default()
         };
-        let count = self.result_entries.len();
+        let count = self.result_dns.len();
         let title = format!("Results ({count})  j/k=navigate  H=history");
 
         let visible_height = area.height.saturating_sub(2) as usize;
         let items: Vec<ListItem> = self
-            .result_entries
+            .result_dns
             .iter()
             .enumerate()
             .skip(self.result_scroll)
             .take(visible_height)
-            .map(|(i, (dn, _))| {
+            .map(|(i, dn)| {
                 let style = if self.selected_result == Some(i) {
                     Style::default().add_modifier(Modifier::REVERSED)
                 } else {
@@ -885,8 +938,8 @@ impl SearchPage {
             Style::default()
         };
 
-        let title = match self.selected_result {
-            Some(i) => format!("Attributes — {}", self.result_entries[i].0),
+        let title = match &self.selected_dn {
+            Some(dn) => format!("Attributes — {dn}"),
             None => "Attributes".to_owned(),
         };
 
