@@ -9,21 +9,28 @@ use ratatui::widgets::Paragraph;
 use crate::config::ResolvedConfig;
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, config: &ResolvedConfig, connected: bool) {
+    // Each indicator shows "[Label: ON]" (green) or "[Label: OFF]" (red).
     let indicator = |label: &'static str, on: bool| {
-        let style = if on {
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD)
+        let (text, color) = if on {
+            ("ON", Color::Green)
         } else {
-            Style::default().fg(Color::DarkGray)
+            ("OFF", Color::Red)
         };
-        vec![Span::styled(format!("[{label}]"), style), Span::raw(" ")]
+        let style = Style::default().fg(color).add_modifier(Modifier::BOLD);
+        vec![
+            Span::styled(format!("[{label}: {text}]"), style),
+            Span::raw(" "),
+        ]
     };
 
+    // Cycle indicator always shows its current value; green when non-default, red for OFF.
     let cycle = |label: &str, value: &str| {
-        let style = Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD);
+        let color = if value == "OFF" {
+            Color::Red
+        } else {
+            Color::Green
+        };
+        let style = Style::default().fg(color).add_modifier(Modifier::BOLD);
         vec![
             Span::styled(format!("[{label}: {value}]"), style),
             Span::raw(" "),

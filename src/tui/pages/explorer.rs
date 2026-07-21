@@ -15,6 +15,7 @@ use crate::config::{AttrSort, TimeFmt};
 use crate::formats::attributes::{
     format_bin_value, format_bitset_rows, format_value, is_bitset_attr,
 };
+use crate::formats::colors::{attr_value_color, bin_attr_value_color};
 use crate::formats::display::entry_display_name;
 use crate::formats::timestamp::{filetime_parts, generalized_time_parts};
 use crate::ldap::search::{SearchParams, search_all};
@@ -42,6 +43,7 @@ pub struct ExplorerPage {
     page_size: u32,
     emojis: bool,
     format_attrs: bool,
+    colors: bool,
     expand_attrs: bool,
     attr_limit: usize,
     attrsort: AttrSort,
@@ -70,6 +72,7 @@ impl ExplorerPage {
             page_size: 800,
             emojis: true,
             format_attrs: true,
+            colors: true,
             expand_attrs: true,
             attr_limit: 20,
             attrsort: AttrSort::None,
@@ -89,6 +92,7 @@ impl ExplorerPage {
         self.page_size = cfg.paging;
         self.emojis = cfg.emojis;
         self.format_attrs = cfg.format;
+        self.colors = cfg.colors;
         self.expand_attrs = cfg.expand;
         self.attr_limit = cfg.limit;
         self.attrsort = cfg.attrsort.clone();
@@ -205,34 +209,64 @@ impl ExplorerPage {
         }
     }
 
-    /// Build a styled Line for one attribute value, coloring the distance suffix for timestamps.
+    /// Build a styled Line for one attribute value.
+    ///
+    /// When Colors is ON, timestamp attrs get a colored distance suffix; other attrs
+    /// get a per-attribute color applied to the whole value span.
     fn styled_line(&self, name: &str, rv: &RawVal) -> Line<'static> {
         let name_span = Span::styled(format!("{name}: "), Style::default().fg(Color::Cyan));
 
+        // Timestamp attrs: split into date + colored distance suffix.
         if self.format_attrs {
-            // Attempt to produce a split (date, distance, color_level) for timestamp attrs.
             if let RawVal::Text(s) = rv {
                 if let Some((date_str, dist_str, level)) =
                     try_timestamp_parts(name, s, &self.timefmt, self.offset)
                 {
-                    let dist_color = match level {
-                        0 => Color::Green,
-                        1 => Color::Yellow,
-                        _ => Color::Red,
+                    let dist_color = if self.colors {
+                        match level {
+                            0 => Color::Green,
+                            1 => Color::Yellow,
+                            _ => Color::Red,
+                        }
+                    } else {
+                        Color::Reset
+                    };
+                    let dist_span = if self.colors {
+                        Span::styled(format!("({dist_str})"), Style::default().fg(dist_color))
+                    } else {
+                        Span::raw(format!("({dist_str})"))
                     };
                     return Line::from(vec![
                         name_span,
                         Span::raw(date_str),
                         Span::raw(" "),
-                        Span::styled(format!("({dist_str})"), Style::default().fg(dist_color)),
+                        dist_span,
                     ]);
                 }
             }
         }
 
-        // Non-timestamp or format OFF: plain formatting.
+        // All other attrs: compute value string then apply optional color.
         let vals = self.format_raw_val(name, rv);
         let val_str = vals.join(" | ");
+
+        if self.colors {
+            let color = match rv {
+                RawVal::Bin(_) => bin_attr_value_color(name),
+                RawVal::Text(s) => {
+                    // Use the raw value for color lookup so duration/threshold rules
+                    // see the original number, not the formatted string.
+                    attr_value_color(name, s)
+                }
+            };
+            if let Some(c) = color {
+                return Line::from(vec![
+                    name_span,
+                    Span::styled(val_str, Style::default().fg(c)),
+                ]);
+            }
+        }
+
         Line::from(vec![name_span, Span::raw(val_str)])
     }
 
