@@ -15,6 +15,7 @@ use crate::config::ResolvedConfig;
 use crate::ldap::{BackendFlavor, LdapClient};
 use crate::tui::log_panel::LogPanel;
 use crate::tui::pages::{Page, PageKind};
+use crate::tui::status_bar::StatusAction;
 
 /// Shared, async-safe handle to the LDAP connection.
 pub type SharedLdap = Arc<AsyncMutex<LdapClient>>;
@@ -63,6 +64,17 @@ pub enum AppMsg {
     },
     /// A toggle key was pressed; pages should re-render with updated config.
     ConfigChanged(Box<ResolvedConfig>),
+    /// Members of a group resolved from a `member` attribute walk.
+    /// Each entry is `(dn, member_names)` — one per matching group object found.
+    GroupMembers {
+        entries: Vec<(String, Vec<String>)>,
+        truncation: Truncation,
+    },
+    /// Groups an object belongs to, resolved from `memberOf`.
+    ObjectGroups {
+        groups: Vec<String>,
+        truncation: Truncation,
+    },
     /// Push a message to the application log panel.
     Log(String),
 }
@@ -102,6 +114,13 @@ impl std::fmt::Debug for AppMsg {
                 "SearchDone(gen={generation}, {filter:?}, {} entries, {truncation:?})",
                 entries.len()
             ),
+            AppMsg::GroupMembers { entries, .. } => {
+                let total: usize = entries.iter().map(|(_, m)| m.len()).sum();
+                write!(f, "GroupMembers({} groups, {total} members)", entries.len())
+            }
+            AppMsg::ObjectGroups { groups, .. } => {
+                write!(f, "ObjectGroups({} groups)", groups.len())
+            }
             AppMsg::ConfigChanged(_) => write!(f, "ConfigChanged"),
             AppMsg::Log(msg) => write!(f, "Log({msg:?})"),
         }
@@ -127,6 +146,10 @@ pub struct App {
     pub log: LogPanel,
     pub msg_tx: mpsc::Sender<AppMsg>,
     msg_rx: mpsc::Receiver<AppMsg>,
+    /// Tab hit zones from the last render: (rect, page_index).
+    tab_zones: Vec<(ratatui::layout::Rect, usize)>,
+    /// Status-bar hit zones from the last render: (rect, action).
+    status_zones: Vec<(ratatui::layout::Rect, StatusAction)>,
 }
 
 impl App {
@@ -144,6 +167,8 @@ impl App {
             log: LogPanel::new(),
             msg_tx,
             msg_rx,
+            tab_zones: Vec::new(),
+            status_zones: Vec::new(),
         }
     }
 
@@ -151,7 +176,7 @@ impl App {
         use crate::tui::layout::build_layout;
         let areas = build_layout(frame.area(), self.show_header);
         let visible = self.visible_pages();
-        crate::tui::header::render(
+        self.tab_zones = crate::tui::header::render(
             frame,
             areas.tab_bar,
             &self.pages,
@@ -159,15 +184,61 @@ impl App {
             &visible,
         );
         if self.show_header {
-            crate::tui::status_bar::render(frame, areas.status_bar, &self.config, self.connected);
+            self.status_zones = crate::tui::status_bar::render(
+                frame,
+                areas.status_bar,
+                &self.config,
+                self.connected,
+            );
+        } else {
+            self.status_zones.clear();
         }
         self.pages[self.active_page].render(frame, areas.content);
         self.log.render(frame, areas.log_panel);
     }
 
     pub fn handle_event(&mut self, event: Event) -> Result<bool> {
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
+        use crossterm::event::{
+            KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        };
         if let Event::Mouse(mouse) = event {
+            // Check tab-bar and status-bar clicks before forwarding to the page.
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                let col = mouse.column;
+                let row = mouse.row;
+
+                // Tab bar click → switch to that page.
+                for &(rect, page_idx) in &self.tab_zones {
+                    if row == rect.y && col >= rect.x && col < rect.x + rect.width {
+                        self.active_page = page_idx;
+                        return Ok(false);
+                    }
+                }
+
+                // Status-bar click → fire the corresponding toggle.
+                let action = self.status_zones.iter().find_map(|&(rect, action)| {
+                    if row == rect.y && col >= rect.x && col < rect.x + rect.width {
+                        Some(action)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(action) = action {
+                    match action {
+                        StatusAction::ToggleFormat => self.config.format = !self.config.format,
+                        StatusAction::ToggleColors => self.config.colors = !self.config.colors,
+                        StatusAction::ToggleExpand => self.config.expand = !self.config.expand,
+                        StatusAction::ToggleEmoji => self.config.emojis = !self.config.emojis,
+                        StatusAction::ToggleDeleted => self.config.deleted = !self.config.deleted,
+                        StatusAction::CycleSort => {
+                            self.config.attrsort = self.config.attrsort.next()
+                        }
+                    }
+                    self.broadcast_config();
+                    return Ok(false);
+                }
+            }
+
             self.pages[self.active_page].handle_mouse(mouse);
             return Ok(false);
         }
@@ -269,7 +340,11 @@ impl App {
             AppMsg::Log(msg) => {
                 self.log.push(msg);
             }
-            AppMsg::ChildEntries { .. } | AppMsg::LdapResult(_) | AppMsg::SearchDone { .. } => {
+            AppMsg::ChildEntries { .. }
+            | AppMsg::LdapResult(_)
+            | AppMsg::SearchDone { .. }
+            | AppMsg::GroupMembers { .. }
+            | AppMsg::ObjectGroups { .. } => {
                 self.pages[self.active_page].apply_msg(msg);
             }
         }

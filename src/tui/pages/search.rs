@@ -1290,7 +1290,7 @@ impl Page for SearchPage {
     }
 
     fn captures_input(&self) -> bool {
-        self.settings_open || self.finder.is_some()
+        self.focus == Focus::Filter || self.settings_open || self.finder.is_some()
     }
 
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect) {
