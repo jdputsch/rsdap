@@ -16,8 +16,7 @@ mod tui;
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = config::cli::parse();
-    let cfg = config::file::load(&args)?;
-    let resolved = config::resolve(args, cfg)?;
+    let resolved = config::resolve(args)?;
 
     if let Some(path) = resolved.debug_log.as_deref() {
         let file = std::fs::OpenOptions::new()

@@ -12,12 +12,12 @@ use anyhow::{Result, bail};
 
 use crate::ldap::BackendFlavor;
 
-/// Merge CLI args and (optionally) a loaded file config into a `ResolvedConfig`.
+/// Dispatch subcommands, load the config file, and merge everything into a `ResolvedConfig`.
 ///
-/// Handles subcommands (`init-config`, `version`) by printing and exiting before
-/// any TUI state is created.
-pub fn resolve(args: cli::Cli, file: Option<file::FileConfig>) -> Result<ResolvedConfig> {
-    // ── Subcommands ────────────────────────────────────────────────────────────
+/// Print-and-exit subcommands (`init-config`, `version`) run before the config
+/// file is loaded so a corrupt or missing file never blocks them.
+pub fn resolve(args: cli::Cli) -> Result<ResolvedConfig> {
+    // ── Subcommands (before any file I/O) ─────────────────────────────────────
     if let Some(cmd) = &args.command {
         match cmd {
             cli::Commands::Version => {
@@ -35,6 +35,12 @@ pub fn resolve(args: cli::Cli, file: Option<file::FileConfig>) -> Result<Resolve
         }
     }
 
+    let file = file::load(&args)?;
+    resolve_inner(args, file)
+}
+
+/// Merge CLI args and an already-loaded (optional) file config into a `ResolvedConfig`.
+fn resolve_inner(args: cli::Cli, file: Option<file::FileConfig>) -> Result<ResolvedConfig> {
     // ── Find named connection from file config ─────────────────────────────────
     let conn_name = args.connection.as_deref().or(
         // treat positional target as a connection name when it doesn't look like a host
@@ -505,7 +511,7 @@ mod tests {
     #[test]
     fn anonymous_when_no_credentials() {
         let c = cli(&["ldap://localhost"]);
-        let r = resolve(c, None).unwrap();
+        let r = resolve_inner(c, None).unwrap();
         assert_eq!(r.auth, AuthMethod::Anonymous);
     }
 
@@ -518,7 +524,7 @@ mod tests {
             "-p",
             "secret",
         ]);
-        let r = resolve(c, None).unwrap();
+        let r = resolve_inner(c, None).unwrap();
         assert_eq!(
             r.auth,
             AuthMethod::Simple {
@@ -531,7 +537,7 @@ mod tests {
     #[test]
     fn kerberos_bind_from_flag() {
         let c = cli(&["host", "-k"]);
-        let r = resolve(c, None).unwrap();
+        let r = resolve_inner(c, None).unwrap();
         assert_eq!(
             r.auth,
             AuthMethod::Kerberos {
@@ -544,7 +550,7 @@ mod tests {
     #[test]
     fn certificate_pem_from_flags() {
         let c = cli(&["host", "--crt", "/tmp/c.pem", "--key", "/tmp/k.pem"]);
-        let r = resolve(c, None).unwrap();
+        let r = resolve_inner(c, None).unwrap();
         assert_eq!(
             r.auth,
             AuthMethod::Certificate {
@@ -557,7 +563,7 @@ mod tests {
     #[test]
     fn pkcs12_from_flags() {
         let c = cli(&["host", "--pfx", "/tmp/cred.pfx", "-p", "passphrase"]);
-        let r = resolve(c, None).unwrap();
+        let r = resolve_inner(c, None).unwrap();
         assert_eq!(
             r.auth,
             AuthMethod::CertificatePkcs12 {
@@ -572,28 +578,28 @@ mod tests {
     #[test]
     fn backend_msad_default() {
         let c = cli(&["host"]);
-        let r = resolve(c, None).unwrap();
+        let r = resolve_inner(c, None).unwrap();
         assert_eq!(r.backend, BackendFlavor::Auto);
     }
 
     #[test]
     fn backend_basic_flag() {
         let c = cli(&["host", "-b", "basic"]);
-        let r = resolve(c, None).unwrap();
+        let r = resolve_inner(c, None).unwrap();
         assert_eq!(r.backend, BackendFlavor::Basic);
     }
 
     #[test]
     fn backend_auto_flag() {
         let c = cli(&["host", "-b", "auto"]);
-        let r = resolve(c, None).unwrap();
+        let r = resolve_inner(c, None).unwrap();
         assert_eq!(r.backend, BackendFlavor::Auto);
     }
 
     #[test]
     fn backend_invalid_returns_error() {
         let c = cli(&["host", "-b", "invalid"]);
-        assert!(resolve(c, None).is_err());
+        assert!(resolve_inner(c, None).is_err());
     }
 
     // ── port and LDAPS ─────────────────────────────────────────────────────────
@@ -601,7 +607,7 @@ mod tests {
     #[test]
     fn default_port_plain() {
         let c = cli(&["host"]);
-        let r = resolve(c, None).unwrap();
+        let r = resolve_inner(c, None).unwrap();
         assert_eq!(r.port, 389);
         assert!(!r.ldaps);
     }
@@ -609,7 +615,7 @@ mod tests {
     #[test]
     fn default_port_ldaps() {
         let c = cli(&["host", "-S"]);
-        let r = resolve(c, None).unwrap();
+        let r = resolve_inner(c, None).unwrap();
         assert_eq!(r.port, 636);
         assert!(r.ldaps);
     }
@@ -617,7 +623,7 @@ mod tests {
     #[test]
     fn explicit_port_wins() {
         let c = cli(&["host", "-S", "-P", "3269"]);
-        let r = resolve(c, None).unwrap();
+        let r = resolve_inner(c, None).unwrap();
         assert_eq!(r.port, 3269);
     }
 
@@ -626,7 +632,7 @@ mod tests {
     #[test]
     fn port_embedded_in_plain_url() {
         let c = cli(&["ldap://localhost:22389"]);
-        let r = resolve(c, None).unwrap();
+        let r = resolve_inner(c, None).unwrap();
         assert_eq!(r.server, "localhost");
         assert_eq!(r.port, 22389);
     }
@@ -634,7 +640,7 @@ mod tests {
     #[test]
     fn port_embedded_in_ldaps_url() {
         let c = cli(&["ldaps://dc.corp.local:3269"]);
-        let r = resolve(c, None).unwrap();
+        let r = resolve_inner(c, None).unwrap();
         assert_eq!(r.server, "dc.corp.local");
         assert_eq!(r.port, 3269);
     }
@@ -642,7 +648,7 @@ mod tests {
     #[test]
     fn port_embedded_in_bare_host() {
         let c = cli(&["dc.corp.local:389"]);
-        let r = resolve(c, None).unwrap();
+        let r = resolve_inner(c, None).unwrap();
         assert_eq!(r.server, "dc.corp.local");
         assert_eq!(r.port, 389);
     }
@@ -651,7 +657,7 @@ mod tests {
     fn explicit_flag_overrides_url_port() {
         // -P 636 beats the :389 in the URL
         let c = cli(&["ldap://localhost:389", "-P", "636"]);
-        let r = resolve(c, None).unwrap();
+        let r = resolve_inner(c, None).unwrap();
         assert_eq!(r.port, 636);
     }
 
@@ -660,28 +666,28 @@ mod tests {
     #[test]
     fn timefmt_defaults_eu() {
         let c = cli(&["host"]);
-        let r = resolve(c, None).unwrap();
+        let r = resolve_inner(c, None).unwrap();
         assert_eq!(r.timefmt, TimeFmt::Eu);
     }
 
     #[test]
     fn timefmt_iso8601() {
         let c = cli(&["host", "--timefmt", "ISO8601"]);
-        let r = resolve(c, None).unwrap();
+        let r = resolve_inner(c, None).unwrap();
         assert_eq!(r.timefmt, TimeFmt::Iso8601);
     }
 
     #[test]
     fn timefmt_custom() {
         let c = cli(&["host", "--timefmt", "%Y/%m/%d"]);
-        let r = resolve(c, None).unwrap();
+        let r = resolve_inner(c, None).unwrap();
         assert_eq!(r.timefmt, TimeFmt::Custom("%Y/%m/%d".to_owned()));
     }
 
     #[test]
     fn attrsort_asc() {
         let c = cli(&["host", "--attrsort", "asc"]);
-        let r = resolve(c, None).unwrap();
+        let r = resolve_inner(c, None).unwrap();
         assert_eq!(r.attrsort, AttrSort::Asc);
     }
 
@@ -695,7 +701,7 @@ mod tests {
         let c = cli(&["host"]);
         let mut fc = empty_file_config();
         fc.global.limit = Some(50);
-        let r = resolve(c, Some(fc)).unwrap();
+        let r = resolve_inner(c, Some(fc)).unwrap();
         assert_eq!(r.limit, 20);
     }
 }
