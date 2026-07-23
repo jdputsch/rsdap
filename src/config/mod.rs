@@ -141,7 +141,8 @@ fn resolve_inner(args: cli::Cli, file: Option<file::FileConfig>) -> Result<Resol
     let debug_log = args
         .debug_log
         .clone()
-        .or_else(|| global.and_then(|g| g.debug_log.clone()));
+        .or_else(|| global.and_then(|g| g.debug_log.clone()))
+        .filter(|s| !s.is_empty());
 
     // ── TimeFmt ─────────────────────────────────────────────────────────────────
     let timefmt = global
