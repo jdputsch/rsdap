@@ -148,7 +148,25 @@ Phases are ordered so each one produces a **runnable, manually testable result**
 
 ---
 
-## Phase 6 — Connection Form & Reconnect
+## Phase 6 — Groups Page (read-only)
+
+**Goal:** The Groups page resolves group members and the groups an object belongs to. Write operations (add/remove member) are deferred to Phase 9.
+
+**Files to implement:**
+- `src/tui/pages/groups.rs` — full implementation:
+  - Group name input → Enter → collapsible member tree (OU-organised, AD range retrieval)
+  - Object name input → Enter → groups table
+
+**Tests:**
+- Unit: member tree builds correctly from `(dn, members)` entries
+- Unit: AD ranged key detection (`member;range=0-1499`)
+- Unit: LDAP DN backslash unescaping in `rdn_value`
+
+**Manual verification:** Enter a group name → member tree appears; enter a user/object name → their groups appear.
+
+---
+
+## Phase 7 — Connection Form & Reconnect
 
 **Goal:** `l` opens the connection configuration form at runtime; `Ctrl+R` reconnects; `Ctrl+U` issues StartTLS.
 
@@ -167,50 +185,57 @@ Phases are ordered so each one produces a **runnable, manually testable result**
 **Manual verification:** Open form with `l`; change server; press Update; app reconnects to new host.
 
 ---
+## Phase 8 — Export & Read-Only Explorer Polish
 
-## Phase 7 — Groups Page
-
-**Goal:** The Groups page resolves group members and the groups an object belongs to, and supports adding/removing membership.
+**Goal:** Wire JSON export, complete the non-mutating Explorer keyboard shortcuts, and address known polish gaps from earlier phases. No server writes in this phase.
 
 **Files to implement:**
-- `src/tui/pages/groups.rs` — full implementation:
-  - Group name input → Enter → members table
-  - Object name input → Enter → groups table
-  - MaxDepth input (0 = immediate, -1 = all nested via recursive search)
-  - `Delete` removes member; `Ctrl+G` adds member
-- `src/ldap/mutation.rs` — `add_attribute_value` and `delete_attribute_value`
+- `src/export/json.rs` — already implemented; wire `Ctrl+S` export call from Explorer
+- `src/tui/pages/explorer.rs` — read-only keyboard shortcuts not yet wired: `Ctrl+S` (export)
+- `src/tui/widgets/form.rs` — any remaining field types needed for the connection form (Phase 7) or settings modals
+
+**Polish (known gaps from phases 3–4):**
+- `src/tui/attrs.rs` — replace `List`-based `"name: value"` rendering with a proper two-column `Table` widget so attribute names and values have independently-sized, aligned columns
+- `src/tui/pages/explorer.rs` / `src/cache.rs` — consult `EntryCache` before firing `fetch_entry` to avoid a redundant LDAP Base-scope search on re-selection of an already-loaded entry
 
 **Tests:**
-- Unit: `delete_attribute_value` builds the correct `ldap3::Mod` operation
-- Unit: `add_attribute_value` builds the correct `ldap3::Mod` operation
-- Integration (`#[ignore]`): add a member to a group; verify with a follow-up search; remove them; verify again
+- Unit: `export` writes a file with correct `{Data, Format}` structure and valid JSON
 
-**Manual verification:** Enter a group DN → members appear; Delete removes one; enter a user DN → their groups appear.
+**Manual verification:** `Ctrl+S` on a selected entry produces a valid JSON file in `data/`; attribute panel shows visually aligned two-column layout; re-selecting a previously visited entry does not trigger a new network request.
 
 ---
 
-## Phase 8 — Write Operations & Export
+## Phase 9 — Write Operations (server-mutating)
 
-**Goal:** Complete Explorer write operations (create, delete, rename, attribute edit) and JSON export.
+**Goal:** Implement all operations that modify the LDAP directory. Requires a writable test server (local OpenLDAP Docker or AD lab). Each sub-section can be tackled independently.
 
-**Files to implement:**
+### 9a — Explorer write operations
 - `src/ldap/mutation.rs` — `create_object`, `delete_object`, `move_object`, `modify_attribute`, `reset_password`
-- `src/tui/pages/explorer.rs` — wire `Ctrl+N`, `Delete`, `Ctrl+L`, `Ctrl+E`, `Ctrl+N` (attrs), `Delete` (attrs), `Ctrl+S`
-- `src/tui/widgets/form.rs` — complete all field types (password masked input, dropdown, checkbox)
-- `src/export/json.rs` — already implemented; wire `Ctrl+S` calls through to it
+- `src/tui/pages/explorer.rs` — wire `Ctrl+N` (new object), `Delete` (delete object), `Ctrl+L` (rename/move), `Ctrl+E` (edit attribute), `Delete` (delete attribute value)
+- `src/tui/widgets/form.rs` — password masked input, dropdown, checkbox field types
 
 **Tests:**
 - Unit: `create_object` produces correct `ldap3` add request for each `ObjectClass` variant
 - Unit: `move_object` builds correct ModifyDN request
 - Unit: `reset_password` correctly UTF-16LE-encodes a password with surrounding quotes
-- Unit: `export` writes a file with correct `{Data, Format}` structure and valid JSON
 - Integration (`#[ignore]`): create an OU, rename it, add an attribute, delete the OU; assert clean state after
 
-**Manual verification:** Create an OU; rename it; add/edit/delete an attribute; `Ctrl+S` produces a valid JSON file in `data/`.
+**Manual verification:** Create an OU; rename it; add/edit/delete an attribute value.
+
+### 9b — Groups page write operations
+- `src/ldap/mutation.rs` — `add_attribute_value`, `delete_attribute_value`
+- `src/tui/pages/groups.rs` — `Delete` removes a member from a group; `Ctrl+G` adds a member
+
+**Tests:**
+- Unit: `add_attribute_value` builds the correct `ldap3::Mod` add operation
+- Unit: `delete_attribute_value` builds the correct `ldap3::Mod` delete operation
+- Integration (`#[ignore]`): add a member to a group; verify with a follow-up search; remove them; verify again
+
+**Manual verification:** Delete removes a member from the group on the server; Ctrl+G adds one.
 
 ---
 
-## Phase 9 — AD-Specific Features (deferred)
+## Phase 10 — AD-Specific Features (deferred)
 
 Implemented once the core browser is solid. Each item is its own sub-phase:
 
@@ -237,4 +262,4 @@ Implemented once the core browser is solid. Each item is its own sub-phase:
 | `formats/display.rs` — `entry_display_name`, `emoji_for_entry` | 3 |
 | `tui/layout.rs` — `build_layout` | 1 (already wired) |
 | `tui/widgets/tree.rs` — skeleton | 3 (extend) |
-| `export/json.rs` — full implementation | 8 |
+| `export/json.rs` — full implementation | 8, 9a |

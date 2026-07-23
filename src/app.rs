@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 use crate::cache::EntryCache;
 use crate::config::ResolvedConfig;
 use crate::ldap::{BackendFlavor, LdapClient};
+use crate::tui::connection_form::ConnectionForm;
 use crate::tui::log_panel::LogPanel;
 use crate::tui::pages::{Page, PageKind};
 use crate::tui::status_bar::StatusAction;
@@ -77,6 +78,8 @@ pub enum AppMsg {
     },
     /// Push a message to the application log panel.
     Log(String),
+    /// User submitted the connection form; reconnect with the new config.
+    Reconnect(Box<ResolvedConfig>),
 }
 
 // Manual Debug for AppMsg because LdapClient doesn't derive Debug.
@@ -123,6 +126,7 @@ impl std::fmt::Debug for AppMsg {
             }
             AppMsg::ConfigChanged(_) => write!(f, "ConfigChanged"),
             AppMsg::Log(msg) => write!(f, "Log({msg:?})"),
+            AppMsg::Reconnect(cfg) => write!(f, "Reconnect({}:{})", cfg.server, cfg.port),
         }
     }
 }
@@ -150,6 +154,8 @@ pub struct App {
     tab_zones: Vec<(ratatui::layout::Rect, usize)>,
     /// Status-bar hit zones from the last render: (rect, action).
     status_zones: Vec<(ratatui::layout::Rect, StatusAction)>,
+    /// Connection configuration modal; `Some` while `l` is open.
+    connection_form: Option<ConnectionForm>,
 }
 
 impl App {
@@ -169,6 +175,7 @@ impl App {
             msg_rx,
             tab_zones: Vec::new(),
             status_zones: Vec::new(),
+            connection_form: None,
         }
     }
 
@@ -195,12 +202,34 @@ impl App {
         }
         self.pages[self.active_page].render(frame, areas.content);
         self.log.render(frame, areas.log_panel);
+        if let Some(form) = &self.connection_form {
+            form.render(frame, frame.area());
+        }
     }
 
     pub fn handle_event(&mut self, event: Event) -> Result<bool> {
         use crossterm::event::{
             KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
         };
+
+        // Connection form intercepts all input when open.
+        if let Some(form) = &mut self.connection_form {
+            if let Event::Key(KeyEvent {
+                code, modifiers, ..
+            }) = event
+            {
+                form.handle_key(code, modifiers);
+                if form.is_cancelled() {
+                    self.connection_form = None;
+                } else if form.is_submitted() {
+                    let new_cfg = form.to_config(&self.config);
+                    self.connection_form = None;
+                    let _ = self.msg_tx.try_send(AppMsg::Reconnect(Box::new(new_cfg)));
+                }
+            }
+            return Ok(false);
+        }
+
         if let Event::Mouse(mouse) = event {
             // Check tab-bar and status-bar clicks before forwarding to the page.
             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
@@ -277,6 +306,23 @@ impl App {
                         self.config.attrsort = self.config.attrsort.next();
                         self.broadcast_config();
                     }
+                    (KeyCode::Char('l'), KeyModifiers::NONE) => {
+                        self.connection_form = Some(ConnectionForm::new(&self.config));
+                    }
+                    (KeyCode::Char('r'), KeyModifiers::CONTROL) => {
+                        let _ = self
+                            .msg_tx
+                            .try_send(AppMsg::Reconnect(Box::new(self.config.clone())));
+                    }
+                    (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                        if let Some(ldap) = &self.ldap {
+                            let ldap = ldap.clone();
+                            tokio::spawn(async move {
+                                let mut guard = ldap.lock().await;
+                                let _ = guard.start_tls().await;
+                            });
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -346,6 +392,36 @@ impl App {
             | AppMsg::GroupMembers { .. }
             | AppMsg::ObjectGroups { .. } => {
                 self.pages[self.active_page].apply_msg(msg);
+            }
+            AppMsg::Reconnect(cfg) => {
+                self.config = *cfg.clone();
+                self.connected = false;
+                self.ldap = None;
+                self.broadcast_config();
+                self.log
+                    .push(format!("Reconnecting to {}:{}…", cfg.server, cfg.port));
+                let tx = self.msg_tx.clone();
+                tokio::spawn(async move {
+                    match LdapClient::connect(&cfg).await {
+                        Ok(client) => {
+                            let root_dn = client.root_dn.clone();
+                            let tls = client.tls;
+                            let flavor = client.flavor.clone();
+                            let client = Arc::new(AsyncMutex::new(client));
+                            let _ = tx
+                                .send(AppMsg::Connected {
+                                    root_dn,
+                                    tls,
+                                    flavor,
+                                    client,
+                                })
+                                .await;
+                        }
+                        Err(e) => {
+                            let _ = tx.send(AppMsg::Error(e.to_string())).await;
+                        }
+                    }
+                });
             }
         }
     }
