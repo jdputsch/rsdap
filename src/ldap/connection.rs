@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use ldap3::{Ldap, LdapConnAsync, LdapConnSettings, Scope, SearchEntry};
 use thiserror::Error;
+use tracing::{debug, error};
 
 use crate::config::{AuthMethod, ResolvedConfig};
 use crate::ldap::BackendFlavor;
@@ -29,18 +30,41 @@ impl LdapClient {
     /// Connect and authenticate using the provided configuration.
     pub async fn connect(cfg: &ResolvedConfig) -> Result<Self, LdapError> {
         let url = build_url(cfg);
+        debug!(url = %url, timeout = cfg.timeout, insecure = cfg.insecure, "connecting");
+
         let settings = LdapConnSettings::new()
             .set_conn_timeout(Duration::from_secs(cfg.timeout))
             .set_no_tls_verify(cfg.insecure);
 
-        let (conn, mut ldap) = LdapConnAsync::with_settings(settings, &url).await?;
+        let (conn, mut ldap) = LdapConnAsync::with_settings(settings, &url)
+            .await
+            .map_err(|e| {
+                error!(error = %e, "TCP/TLS connection failed");
+                e
+            })?;
         ldap3::drive!(conn);
+        debug!("TCP/TLS layer established, binding");
 
-        crate::ldap::auth::bind(&mut ldap, &cfg.auth).await?;
+        crate::ldap::auth::bind(&mut ldap, &cfg.auth)
+            .await
+            .map_err(|e| {
+                error!(error = %e, "bind failed");
+                e
+            })?;
+        debug!("bind succeeded");
 
         let root_dn = match &cfg.root_dn {
-            Some(dn) => dn.clone(),
-            None => discover_root_dn_inner(&mut ldap).await?,
+            Some(dn) => {
+                debug!(root_dn = %dn, "using configured root DN");
+                dn.clone()
+            }
+            None => {
+                debug!("discovering root DN from RootDSE");
+                discover_root_dn_inner(&mut ldap).await.map_err(|e| {
+                    error!(error = %e, "root DN discovery failed");
+                    e
+                })?
+            }
         };
 
         let flavor = if cfg.backend == BackendFlavor::Auto {
@@ -48,6 +72,8 @@ impl LdapClient {
         } else {
             cfg.backend.clone()
         };
+
+        debug!(root_dn = %root_dn, flavor = ?flavor, "connected successfully");
 
         Ok(LdapClient {
             root_dn,
@@ -112,14 +138,25 @@ async fn discover_root_dn_inner(ldap: &mut Ldap) -> Result<String, LdapError> {
     Err(LdapError::RootDse)
 }
 
+/// Official Microsoft OID advertised in `supportedCapabilities` by every AD server.
+/// See MS-ADTS §3.1.1.3.4.1 LDAP_CAP_ACTIVE_DIRECTORY_OID.
+const AD_CAPABILITY_OID: &str = "1.2.840.113556.1.4.800";
+
 /// Detect whether the server is MS AD by inspecting the RootDSE.
+///
+/// Primary check: `supportedCapabilities` contains the documented AD OID.
+/// Fallback: AD-only functional-level attributes are present.
 async fn detect_flavor(ldap: &mut Ldap, _root_dn: &str) -> BackendFlavor {
     let result = ldap
         .search(
             "",
             Scope::Base,
             "(objectClass=*)",
-            vec!["forestFunctionality", "domainFunctionality"],
+            vec![
+                "supportedCapabilities",
+                "forestFunctionality",
+                "domainFunctionality",
+            ],
         )
         .await;
 
@@ -128,6 +165,11 @@ async fn detect_flavor(ldap: &mut Ldap, _root_dn: &str) -> BackendFlavor {
             if let Ok((entries, _)) = res.success() {
                 for entry in &entries {
                     let e = SearchEntry::construct(entry.clone());
+                    if let Some(caps) = e.attrs.get("supportedCapabilities") {
+                        if caps.iter().any(|c| c == AD_CAPABILITY_OID) {
+                            return BackendFlavor::MsAd;
+                        }
+                    }
                     if e.attrs.contains_key("forestFunctionality")
                         || e.attrs.contains_key("domainFunctionality")
                     {
@@ -201,5 +243,11 @@ mod tests {
             build_url(&cfg("localhost", 3389, false)),
             "ldap://localhost:3389"
         );
+    }
+
+    #[test]
+    fn ad_capability_oid_value() {
+        use super::AD_CAPABILITY_OID;
+        assert_eq!(AD_CAPABILITY_OID, "1.2.840.113556.1.4.800");
     }
 }

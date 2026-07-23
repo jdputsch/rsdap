@@ -1,5 +1,6 @@
 //! TUI layer: layout helpers, header, log panel, status bar, and page management.
 
+pub mod attrs;
 pub mod event;
 pub mod header;
 pub mod layout;

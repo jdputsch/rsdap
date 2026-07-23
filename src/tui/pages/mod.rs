@@ -6,6 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use crate::app::AppMsg;
+use crate::ldap::BackendFlavor;
 
 pub mod dacl;
 pub mod dns;
@@ -39,6 +40,12 @@ pub enum PageKind {
 pub trait Page {
     /// Short label shown in the tab bar.
     fn title(&self) -> &str;
+
+    /// If Some, this page is only shown when the connected server matches this flavor.
+    /// Universal pages return None (the default).
+    fn required_flavor(&self) -> Option<BackendFlavor> {
+        None
+    }
 
     /// Whether this page is currently capturing all keyboard input (e.g. a modal is open).
     fn captures_input(&self) -> bool;

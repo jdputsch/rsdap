@@ -573,7 +573,7 @@ mod tests {
     fn backend_msad_default() {
         let c = cli(&["host"]);
         let r = resolve(c, None).unwrap();
-        assert_eq!(r.backend, BackendFlavor::MsAd);
+        assert_eq!(r.backend, BackendFlavor::Auto);
     }
 
     #[test]

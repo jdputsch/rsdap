@@ -87,6 +87,39 @@ pub enum AttrSort {
     Desc,
 }
 
+#[cfg(test)]
+impl Default for ResolvedConfig {
+    fn default() -> Self {
+        Self {
+            server: String::new(),
+            port: 389,
+            ldaps: false,
+            insecure: false,
+            socks: None,
+            timeout: 5,
+            backend: BackendFlavor::MsAd,
+            auth: AuthMethod::Anonymous,
+            root_dn: None,
+            filter: String::new(),
+            emojis: true,
+            colors: true,
+            format: true,
+            expand: false,
+            limit: 0,
+            cache: false,
+            deleted: false,
+            schema: false,
+            paging: 500,
+            timefmt: TimeFmt::Eu,
+            offset: 0,
+            attrsort: AttrSort::None,
+            exportdir: String::new(),
+            debug_log: None,
+            ssh: None,
+        }
+    }
+}
+
 impl AttrSort {
     pub fn next(&self) -> Self {
         match self {

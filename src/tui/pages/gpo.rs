@@ -27,6 +27,9 @@ impl Page for GpoPage {
     fn title(&self) -> &str {
         "GPOs"
     }
+    fn required_flavor(&self) -> Option<crate::ldap::BackendFlavor> {
+        Some(crate::ldap::BackendFlavor::MsAd)
+    }
     fn captures_input(&self) -> bool {
         self.modal_open
     }

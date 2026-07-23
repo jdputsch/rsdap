@@ -2,6 +2,7 @@
 
 use ldap3::adapters::{Adapter, EntriesOnly, PagedResults};
 use ldap3::{Scope, SearchEntry};
+use tracing::{debug, error};
 
 use crate::ldap::connection::LdapError;
 
@@ -19,6 +20,14 @@ pub async fn search_all(
     ldap: &mut ldap3::Ldap,
     params: &SearchParams,
 ) -> Result<Vec<SearchEntry>, LdapError> {
+    debug!(
+        base = %params.base,
+        filter = %params.filter,
+        scope = ?params.scope,
+        page_size = params.page_size,
+        "search_all starting"
+    );
+
     let adapters: Vec<Box<dyn Adapter<_, _>>> = vec![
         Box::new(EntriesOnly::new()),
         Box::new(PagedResults::new(params.page_size as i32)),
@@ -32,14 +41,26 @@ pub async fn search_all(
             &params.filter,
             params.attrs.clone(),
         )
-        .await?;
+        .await
+        .map_err(|e| {
+            error!(error = %e, "streaming_search_with failed");
+            e
+        })?;
 
     let mut entries = Vec::new();
-    while let Some(entry) = stream.next().await? {
+    while let Some(entry) = stream.next().await.map_err(|e| {
+        error!(error = %e, "stream.next() error");
+        e
+    })? {
         entries.push(SearchEntry::construct(entry));
     }
-    stream.finish().await.success()?;
 
+    stream.finish().await.success().map_err(|e| {
+        error!(error = %e, "stream.finish() error");
+        LdapError::Connect(e)
+    })?;
+
+    debug!(count = entries.len(), "search_all complete");
     Ok(entries)
 }
 

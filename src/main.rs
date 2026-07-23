@@ -19,15 +19,18 @@ async fn main() -> Result<()> {
     let cfg = config::file::load(&args)?;
     let resolved = config::resolve(args, cfg)?;
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            resolved
-                .debug_log
-                .as_deref()
-                .map(|_| "debug")
-                .unwrap_or("warn"),
-        )
-        .init();
+    if let Some(path) = resolved.debug_log.as_deref() {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|e| anyhow::anyhow!("opening debug log {path}: {e}"))?;
+        tracing_subscriber::fmt()
+            .with_env_filter("rsdap=debug,ldap3=debug")
+            .with_writer(std::sync::Mutex::new(file))
+            .with_ansi(false)
+            .init();
+    }
 
     app::run(resolved).await
 }

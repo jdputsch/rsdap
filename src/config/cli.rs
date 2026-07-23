@@ -86,7 +86,7 @@ pub struct Cli {
     pub timeout: u64,
 
     /// Backend flavor: msad, basic, auto
-    #[arg(short = 'b', long, default_value = "msad")]
+    #[arg(short = 'b', long, default_value = "auto")]
     pub backend: String,
 
     // ── TUI behavior ─────────────────────────────────────────────────────────

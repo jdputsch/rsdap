@@ -27,6 +27,9 @@ impl Page for DaclPage {
     fn title(&self) -> &str {
         "DACLs"
     }
+    fn required_flavor(&self) -> Option<crate::ldap::BackendFlavor> {
+        Some(crate::ldap::BackendFlavor::MsAd)
+    }
     fn captures_input(&self) -> bool {
         self.modal_open
     }

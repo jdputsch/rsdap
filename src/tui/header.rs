@@ -8,13 +8,19 @@ use ratatui::widgets::Paragraph;
 
 use super::pages::Page;
 
-pub fn render(frame: &mut Frame<'_>, area: Rect, pages: &[Box<dyn Page>], active: usize) {
-    let spans: Vec<Span> = pages
+pub fn render(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    pages: &[Box<dyn Page>],
+    active: usize,
+    visible: &[usize],
+) {
+    let spans: Vec<Span> = visible
         .iter()
         .enumerate()
-        .flat_map(|(i, page)| {
-            let label = format!(" {} {} ", i + 1, page.title());
-            let style = if i == active {
+        .flat_map(|(tab_pos, &page_idx)| {
+            let label = format!(" {} {} ", tab_pos + 1, pages[page_idx].title());
+            let style = if page_idx == active {
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::White)
