@@ -47,9 +47,25 @@ connections:
     #   host: jumpbox.example.com
     #   port: 22
     #   user: alice
-    #   # password: ""
-    #   # passfile: ""
-    #   agent: false
-    #   # key: ~/.ssh/id_ed25519
-    #   # key_passphrase: ""
     #   ignore_host_key: false
+    #   # auth is required; choose one of the four variants below:
+    #   #
+    #   # SSH agent (default / recommended):
+    #   auth:
+    #     type: agent
+    #   #
+    #   # SSH private key:
+    #   # auth:
+    #   #   type: key
+    #   #   path: ~/.ssh/id_ed25519
+    #   #   passphrase: ""        # omit if key has no passphrase
+    #   #
+    #   # Inline password:
+    #   # auth:
+    #   #   type: password
+    #   #   password: ""
+    #   #
+    #   # Password read from a file (one line):
+    #   # auth:
+    #   #   type: passwordfile
+    #   #   path: ~/.ssh/jump_password
